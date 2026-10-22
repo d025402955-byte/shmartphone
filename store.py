@@ -86,6 +86,19 @@ CREATE TABLE IF NOT EXISTS messages(
   state TEXT NOT NULL,
   result TEXT
 );
+CREATE TABLE IF NOT EXISTS noise_events(
+  id INTEGER PRIMARY KEY,
+  subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE,
+  call_id TEXT,
+  event_id TEXT UNIQUE,
+  started REAL,
+  ended REAL,
+  noise_sec REAL,
+  peak INTEGER,
+  file_id TEXT,
+  created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS noise_sub ON noise_events(subscriber_id, started);
 CREATE INDEX IF NOT EXISTS alerts_state ON alerts(state);
 CREATE INDEX IF NOT EXISTS subs_legacy ON subscribers(legacy_id);
 CREATE INDEX IF NOT EXISTS alert_phones_phone ON alert_phones(phone);

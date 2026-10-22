@@ -426,6 +426,45 @@ if __name__ == '__main__':
     unittest.main()
 
 
+class HistoryTests(Base):
+    def test_noise_events_recorded_and_history_flow(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567')
+            store.add_verified(self.con, sid, '0501112222', 'admin')
+        p = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'c1', 'PBXcallStatus': 'CALL'}
+        with self.con:
+            ivr.handle(self.cfg, self.con, p, DAY)
+        with self.con:
+            ivr.handle(self.cfg, self.con, {**p, 'apick': '1'}, DAY)
+        room = f's{sid}-0521234567'
+        now = time.time()
+        base = {'time': now, 'roomId': room, 'callId': 'c1', 'num': PBX, 'eventId': 'ev1'}
+        with self.con:
+            core.handle_event(self.cfg, self.con, {**base, 'event': 'noise', 'level': 70, 'startedAt': now - 300}, 'noise')
+            core.handle_event(self.cfg, self.con, {**base, 'event': 'noiseEnd', 'noiseSec': 7.4, 'peakLevel': 81,
+                                                   'fileId': 'F1', 'startedAt': now - 300}, 'noiseEnd')
+            core.handle_event(self.cfg, self.con, {**base, 'eventId': 'ev2', 'event': 'noiseEnd', 'noiseSec': 2,
+                                                   'fileError': True, 'startedAt': now - 60}, 'noiseEnd')
+        rows = self.con.execute('SELECT event_id,noise_sec,peak,file_id FROM noise_events ORDER BY started').fetchall()
+        self.assertEqual([tuple(r) for r in rows], [('ev1', 7.4, 81, 'F1'), ('ev2', 2.0, None, None)])
+        # the verified phone (not a subscriber phone) can hear the history
+        q = {'PBXphone': '0501112222', 'PBXnum': PBX, 'PBXcallId': 'h1', 'PBXcallStatus': 'CALL'}
+        with self.con:
+            r, _ = ivr.handle(self.cfg, self.con, q, DAY, 'history')
+        spoken = ' '.join(f.get('text', '') for f in r[0]['files'])
+        self.assertIn('נרשמו 2 אירועי רעש', spoken)
+        self.assertIn('נמשך 7 שניות', spoken)
+        with self.con:
+            r, _ = ivr.handle(self.cfg, self.con, {**q, 'hpick': '2'}, DAY, 'history')  # newest first: ev1 is #2
+        self.assertEqual(r[0], {'type': 'simpleMessage', 'files': [{'fileId': 'F1'}]})
+        with self.con:
+            r, _ = ivr.handle(self.cfg, self.con, {**q, 'hpick': '1'}, DAY, 'history')  # ev2 has no file
+        self.assertIn('אין הקלטה', ' '.join(f.get('text', '') for f in r[0]['files']))
+        with self.con:
+            r, _ = ivr.handle(self.cfg, self.con, {**q, 'PBXphone': '0599999999', 'PBXcallId': 'h2'}, DAY, 'history')
+        self.assertEqual(r[-1]['type'], 'hangup')  # stranger gets nothing
+
+
 class EmailTests(Base):
     def test_message_email_worker(self):
         self.cfg['smtp'] = {'host': 'h', 'user': 'u', 'password': 'p', 'to': 't@x'}

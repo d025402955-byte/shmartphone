@@ -214,6 +214,9 @@ def sub_page(cfg, con, sid, msg=None, err=None):
         f"<tr><td>{E(v['phone'])}</td><td class='muted'>{fmt_ts(v['verified'])} · {E(v['method'])}</td><td><form method='post' "
         f"action='/admin/sub/{sid}/action'>{hidden(cfg)}<input type='hidden' name='phone' value='{E(v['phone'])}'>"
         f"<button class='btn2' name='op' value='del_alert'>הסרה</button></form></td></tr>" for v in ver)
+    noise = con.execute('SELECT * FROM noise_events WHERE subscriber_id=? ORDER BY started DESC LIMIT 15', (sid,)).fetchall()
+    nz = ''.join(f"<tr><td>{fmt_ts(n['started'])}</td><td>{int(round(n['noise_sec'] or 0))} שנ'</td>"
+                 f"<td>{n['peak'] or ''}</td><td>{'יש הקלטה' if n['file_id'] else ''}</td></tr>" for n in noise)
     act = lambda op, label, cls='': (f"<button class='{cls}' name='op' value='{op}'>{label}</button>")
     return page(f"מנוי {sid}", f"""<div class="card"><h2>מנוי #{sid} {E(s['name'])}</h2>
 <form method="post" action="/admin/sub/{sid}">{hidden(cfg)}{sub_form(cfg, s)}<p><button>שמירה</button></p></form></div>
@@ -230,6 +233,7 @@ def sub_page(cfg, con, sid, msg=None, err=None):
 <form class="row" method="post" action="/admin/sub/{sid}/action" style="margin-top:10px">{hidden(cfg)}
 <label>טלפון (אימות ידני על ידי המנהל)<input name="phone" inputmode="tel"></label>
 <button name="op" value="add_alert">אימות והוספה</button></form></div>
+<div class="card"><h3>אירועי רעש אחרונים</h3><div class="wrap"><table><tr><th>זמן</th><th>משך</th><th>עוצמה</th><th></th></tr>{nz}</table></div></div>
 <div class="card"><h3>שיחות אחרונות</h3><div class="wrap"><table><tr><th>התחלה</th><th>סיום</th><th>מטלפון</th><th>התראות ל</th><th>מצב</th></tr>{ss}</table></div></div>
 <div class="card"><h3>התראות אחרונות</h3><div class="wrap"><table><tr><th>זמן</th><th>סוג</th><th>אל</th><th>מצב</th></tr>{al}</table></div></div>""",
                 msg, err)

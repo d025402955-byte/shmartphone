@@ -9,6 +9,7 @@ Each menu option is its own Technoline API extension pointing to /ivr/<token>/<m
   verify    5  verify a phone number for receiving alerts (code call)
   account   6  account status, alert numbers, phones
   message   9  record a message for customer service (emailed)
+  history      noise history: recent noise events, with their recordings
 
 Per-call state is kept in the sessions table (step + data), so stale request
 parameters can never be mistaken for new answers.
@@ -20,7 +21,7 @@ import time
 
 import store
 
-MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message')
+MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history')
 MENU_KEYS = {'1': 'activate', '2': 'listen', '3': 'info', '4': 'phones', '5': 'verify', '6': 'account',
              '9': 'message'}
 HEB_MONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר',
@@ -96,6 +97,12 @@ TEXTS = {
     'message_prompt': 'השאירו הודעה לשירות הלקוחות, ובסיומה הקישו סולמית.',
     'message_thanks': 'ההודעה התקבלה. נחזור אליכם בהקדם. תודה.',
     'goodbye': 'להתראות.',
+    'history_none': 'לא נרשמו אירועי רעש ביממה האחרונה.',
+    'history_count': 'ביממה האחרונה נרשמו {n} אירועי רעש. אלה האחרונים:',
+    'history_item': 'אירוע {i}: בשעה {hh}, לפני {ago}, נמשך {sec} שניות.',
+    'history_keys': 'לשמיעת הקלטה של אירוע הקישו את מספרו. לסיום הקישו 0.',
+    'history_no_file': 'לאירוע הזה אין הקלטה.',
+    'history_pick': 'להיסטוריה של המנוי',
 }
 
 
@@ -203,7 +210,8 @@ class Call:
             'listening': ('join', self.on_join_result), 'ph_menu': ('phm', self.on_phones_menu),
             'ph_add': ('phn', self.on_phones_add), 'ph_rm': ('phr', self.on_phones_rm),
             'acc_menu': ('acm', self.on_account_menu), 'acc_rm': ('acr', self.on_account_rm),
-            'recording': ('rec', self.on_record),
+            'recording': ('rec', self.on_record), 'his_pick': ('hpick', self.on_history_pick),
+            'his_sub': ('hsub', self.on_history_sub),
         }
         if step in handlers and handlers[step][0] in p:
             return handlers[step][1](p[handlers[step][0]])
@@ -214,7 +222,7 @@ class Call:
     def entry(self, mode):
         return {'menu': self.menu, 'activate': self.activate, 'listen': self.listen, 'info': self.info,
                 'phones': self.phones, 'verify': self.verify, 'account': self.account,
-                'message': self.message}.get(mode, self.activate)()
+                'message': self.message, 'history': self.history}.get(mode, self.activate)()
 
     def on_hangup(self):
         if self.sess:
@@ -444,6 +452,75 @@ class Call:
         if status == 'LEFT':
             return [{'type': 'hangup'}]
         return hangup(self.cfg, t(self.cfg, msgs.get(status, 'error')))
+
+    # ----- noise history -----
+    def allowed_subs(self):
+        """Subscribers this caller may see: own subscription + those that verified this phone."""
+        out = []
+        own = store.find_by_phone(self.con, self.phone)
+        if own:
+            out.append(own)
+        for r in self.con.execute('SELECT s.* FROM subscribers s JOIN alert_phones a ON a.subscriber_id=s.id '
+                                  'WHERE a.phone=?', (self.phone,)):
+            if not any(o['id'] == r['id'] for o in out):
+                out.append(r)
+        return [s for s in out
+                if store.authorization(s, self.day, self.cfg.get('enforce_active_expiry', False))[0]]
+
+    def history(self):
+        subs = [s for s in self.allowed_subs()
+                if self.con.execute('SELECT 1 FROM noise_events WHERE subscriber_id=? AND started>?',
+                                    (s['id'], self.now - 86400)).fetchone()]
+        if not subs:
+            if not self.allowed_subs():
+                return hangup(self.cfg, t(self.cfg, 'not_registered'))
+            return hangup(self.cfg, t(self.cfg, 'history_none'))
+        if len(subs) == 1:
+            return self.history_for(subs[0]['id'])
+        self.data['hsubs'] = [[s['id'], s['main_phone']] for s in subs[:8]]
+        self.save('his_sub')
+        files = []
+        for i, (_, main) in enumerate(self.data['hsubs'], 1):
+            files += [t(self.cfg, 'history_pick'), {'digits': main}, t(self.cfg, 'pick_press'), {'number': str(i)}]
+        return [ask('hsub', files)]
+
+    def on_history_sub(self, key):
+        subs = self.data.get('hsubs', [])
+        if key.isdigit() and 1 <= int(key) <= len(subs):
+            return self.history_for(subs[int(key) - 1][0])
+        return hangup(self.cfg, t(self.cfg, 'goodbye'))
+
+    def history_for(self, sid, prefix=None, replay=True):
+        import zoneinfo
+        tz = zoneinfo.ZoneInfo(self.cfg.get('timezone', 'Asia/Jerusalem'))
+        n = self.con.execute('SELECT COUNT(*) FROM noise_events WHERE subscriber_id=? AND started>?',
+                             (sid, self.now - 86400)).fetchone()[0]
+        rows = self.con.execute('SELECT * FROM noise_events WHERE subscriber_id=? AND started>? '
+                                'ORDER BY started DESC LIMIT 5', (sid, self.now - 86400)).fetchall()
+        self.data['hsid'] = sid
+        self.data['hfiles'] = [r['file_id'] for r in rows]
+        self.save('his_pick')
+        files = [prefix]
+        if replay:
+            files.append(t(self.cfg, 'history_count', n=n))
+            for i, r in enumerate(rows, 1):
+                when = datetime.datetime.fromtimestamp(r['started'], tz)
+                mins = max(0, int((self.now - r['started']) // 60))
+                ago = f'{mins} דקות' if mins < 120 else f'{mins // 60} שעות'
+                files.append(t(self.cfg, 'history_item', i=i, hh=when.strftime('%H:%M'), ago=ago,
+                               sec=int(round(r['noise_sec'] or 0))))
+        files.append(t(self.cfg, 'history_keys'))
+        return [ask('hpick', files, timeout=10)]
+
+    def on_history_pick(self, key):
+        fids = self.data.get('hfiles', [])
+        sid = self.data.get('hsid')
+        if key.isdigit() and 1 <= int(key) <= len(fids):
+            fid = fids[int(key) - 1]
+            if not fid:
+                return self.history_for(sid, t(self.cfg, 'history_no_file'), replay=False)
+            return [say({'fileId': fid})] + self.history_for(sid, replay=False)
+        return hangup(self.cfg, t(self.cfg, 'goodbye'))
 
     # ----- 3: info -----
     def info(self):

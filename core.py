@@ -22,6 +22,27 @@ def text(cfg, key, **kw):
 ALERT_KINDS = ('noise', 'disconnected')
 
 
+def _num(v, cast=float):
+    try:
+        return cast(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def record_noise(con, sess, ev, now):
+    """Keep a history row per noise event (start + end/recording)."""
+    eid = str(ev['eventId'])[:64]
+    con.execute('INSERT OR IGNORE INTO noise_events(subscriber_id,call_id,event_id,started,peak,created) '
+                'VALUES(?,?,?,?,?,?)', (sess['subscriber_id'], sess['call_id'], eid,
+                                       _num(ev.get('startedAt')) or now, _num(ev.get('level'), int), now))
+    if ev.get('event') == 'noiseEnd':
+        file_id = None if ev.get('fileError') else (str(ev.get('fileId') or '')[:64] or None)
+        con.execute('UPDATE noise_events SET ended=?, noise_sec=?, peak=COALESCE(?,peak), file_id=COALESCE(?,file_id), '
+                    'started=COALESCE(?,started) WHERE event_id=?',
+                    (now, _num(ev.get('noiseSec')), _num(ev.get('peakLevel'), int), file_id,
+                     _num(ev.get('startedAt')), eid))
+
+
 def handle_event(cfg, con, ev, header_event, now=None):
     """Validate and record one noise-monitor event. Returns (http_status, message)."""
     now = now or time.time()
@@ -41,6 +62,8 @@ def handle_event(cfg, con, ev, header_event, now=None):
         return 404, 'unknown session'
     if kind == 'monitorStart':
         con.execute("UPDATE sessions SET status='monitoring' WHERE call_id=?", (call_id,))
+    if kind in ('noise', 'noiseEnd') and ev.get('eventId'):
+        record_noise(con, sess, ev, now)
     if kind == 'disconnected':
         con.execute('UPDATE sessions SET ended=COALESCE(ended,?), status=? WHERE call_id=?',
                     (now, 'disconnected ' + str(ev.get('reason', '')), call_id))
