@@ -21,6 +21,17 @@ import store  # noqa: E402
 
 CONFIG_PATH = os.environ.get('SHMARTPHONE_CONFIG', '/etc/shmartphone/app.json')
 MAX_BODY = 6 * 1024 * 1024
+HOME_PAGE = """<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>שמרטפון</title>
+<style>body{font-family:system-ui,Arial,sans-serif;max-width:640px;margin:60px auto;padding:0 16px;color:#1d2433;line-height:1.6}
+h1{font-size:28px}a{color:#2f6fde}</style></head><body>
+<h1>שמרטפון</h1>
+<p>שירות טלפוני לניטור חדר תינוק: הטלפון שבחדר מתקשר לקו השירות, המערכת מזהה רעש
+ומתקשרת להורים להתריע.</p>
+<p>זהו שרת המערכת. הוא משמש את מרכזיית הטלפון ואת מנהל השירות לניהול המנויים,
+ואינו מכיל תוכן לגלישה.</p>
+<p><a href="/admin">כניסת מנהל</a></p>
+</body></html>"""
 
 
 def load_config(path=CONFIG_PATH):
@@ -101,6 +112,9 @@ def make_handler(cfg):
 
             if url.path == '/health':
                 return self.send(200, 'text/plain', b'ok')
+
+            if url.path == '/':
+                return self.send(200, 'text/html; charset=utf-8', HOME_PAGE.encode())
 
             if len(parts) == 2 and parts[0] == 'ivr' and hmac.compare_digest(parts[1], cfg['ivr_token']):
                 params = {k: v[-1] for k, v in urllib.parse.parse_qs(url.query, keep_blank_values=True).items()}
