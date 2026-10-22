@@ -209,6 +209,11 @@ def sub_page(cfg, con, sid, msg=None, err=None):
                  f"<td>{E(r['alert_phone'] or '')}</td><td>{E(r['status'] or '')}</td></tr>" for r in sessions)
     al = ''.join(f"<tr><td>{fmt_ts(r['created'])}</td><td>{E(r['kind'])}</td><td>{E(r['alert_phone'] or '')}</td>"
                  f"<td>{E(r['state'])}</td></tr>" for r in alerts)
+    ver = con.execute('SELECT * FROM alert_phones WHERE subscriber_id=? ORDER BY verified DESC', (sid,)).fetchall()
+    vr = ''.join(
+        f"<tr><td>{E(v['phone'])}</td><td class='muted'>{fmt_ts(v['verified'])} · {E(v['method'])}</td><td><form method='post' "
+        f"action='/admin/sub/{sid}/action'>{hidden(cfg)}<input type='hidden' name='phone' value='{E(v['phone'])}'>"
+        f"<button class='btn2' name='op' value='del_alert'>הסרה</button></form></td></tr>" for v in ver)
     act = lambda op, label, cls='': (f"<button class='{cls}' name='op' value='{op}'>{label}</button>")
     return page(f"מנוי {sid}", f"""<div class="card"><h2>מנוי #{sid} {E(s['name'])}</h2>
 <form method="post" action="/admin/sub/{sid}">{hidden(cfg)}{sub_form(cfg, s)}<p><button>שמירה</button></p></form></div>
@@ -221,6 +226,10 @@ def sub_page(cfg, con, sid, msg=None, err=None):
 <form class="row" method="post" action="/admin/sub/{sid}/action" style="margin-top:10px">{hidden(cfg)}
 <label>טלפון<input name="phone" inputmode="tel"></label><label>תיאור<input name="label"></label>
 <button name="op" value="add_phone">הוספה</button></form></div>
+<div class="card"><h3>מספרים מאומתים לקבלת התראות</h3><table>{vr or '<tr><td class=muted>אין</td></tr>'}</table>
+<form class="row" method="post" action="/admin/sub/{sid}/action" style="margin-top:10px">{hidden(cfg)}
+<label>טלפון (אימות ידני על ידי המנהל)<input name="phone" inputmode="tel"></label>
+<button name="op" value="add_alert">אימות והוספה</button></form></div>
 <div class="card"><h3>שיחות אחרונות</h3><div class="wrap"><table><tr><th>התחלה</th><th>סיום</th><th>מטלפון</th><th>התראות ל</th><th>מצב</th></tr>{ss}</table></div></div>
 <div class="card"><h3>התראות אחרונות</h3><div class="wrap"><table><tr><th>זמן</th><th>סוג</th><th>אל</th><th>מצב</th></tr>{al}</table></div></div>""",
                 msg, err)
@@ -231,6 +240,11 @@ def activity_page(cfg, con):
                        "WHERE x.ended IS NULL ORDER BY x.started DESC LIMIT 100").fetchall()
     alerts = con.execute("SELECT a.*, s.main_phone FROM alerts a LEFT JOIN subscribers s ON s.id=a.subscriber_id "
                          "ORDER BY a.id DESC LIMIT 100").fetchall()
+    msgs = con.execute("SELECT * FROM messages ORDER BY id DESC LIMIT 50").fetchall()
+    ms = ''.join(f"<tr><td>{fmt_ts(m['created'])}</td><td>{E(m['phone'] or '')}</td>"
+                 f"<td>{('<a href=/admin/sub/' + str(m['subscriber_id']) + '>#' + str(m['subscriber_id']) + '</a>') if m['subscriber_id'] else ''}</td>"
+                 f"<td>{int(m['duration'] or 0)} שנ'</td><td>{E(m['state'])}</td>"
+                 f"<td>{('<a href=/admin/msg/' + str(m['id']) + '.mp3>האזנה</a>') if m['file_id'] else ''}</td></tr>" for m in msgs)
     lv = ''.join(f"<tr><td><a href='/admin/sub/{r['subscriber_id']}'>{E(r['main_phone'] or '')}</a></td>"
                  f"<td>{E(r['phone'] or '')}</td><td>{fmt_ts(r['started'])}</td><td>{E(r['alert_phone'] or '')}</td>"
                  f"<td>{E(r['status'] or '')}</td></tr>" for r in live)
@@ -239,6 +253,8 @@ def activity_page(cfg, con):
                  f"<td class='muted'>{E((r['result'] or '')[:120])}</td></tr>" for r in alerts)
     return page('פעילות', f"""<div class="card"><h3>ניטורים פתוחים</h3><div class="wrap"><table><tr><th>מנוי</th><th>מטלפון</th>
 <th>התחלה</th><th>התראות ל</th><th>מצב</th></tr>{lv}</table></div></div>
+<div class="card"><h3>הודעות לשירות הלקוחות</h3><div class="wrap"><table><tr><th>זמן</th><th>מטלפון</th><th>מנוי</th>
+<th>אורך</th><th>מצב</th><th></th></tr>{ms}</table></div></div>
 <div class="card"><h3>התראות אחרונות</h3><div class="wrap"><table><tr><th>זמן</th><th>מנוי</th><th>סוג</th><th>אל</th>
 <th>מצב</th><th>תשובה</th></tr>{al}</table></div></div>""")
 
@@ -339,6 +355,16 @@ def handle(cfg, con, method, path, query, headers, body, day):
         return redirect(f'/admin/sub/{sid}?m=created')
     if parts == ['activity']:
         return html_ok(activity_page(cfg, con))
+    if len(parts) == 2 and parts[0] == 'msg' and parts[1].endswith('.mp3') and parts[1][:-4].isdigit():
+        m = con.execute('SELECT * FROM messages WHERE id=?', (int(parts[1][:-4]),)).fetchone()
+        if not m or not m['file_id']:
+            return 404, 'text/plain', b'not found', {}
+        import core
+        try:
+            audio = core.fetch_recording(cfg, m['file_id'])
+        except Exception as e:
+            return 502, 'text/plain; charset=utf-8', f'ההורדה נכשלה: {e}'.encode(), {}
+        return 200, 'audio/mpeg', audio, {}
     if parts == ['export.csv']:
         return 200, 'text/csv; charset=utf-8', export_csv(con), {
             'Content-Disposition': f'attachment; filename="shmartphone-{day.isoformat()}.csv"'}
@@ -394,6 +420,13 @@ def handle(cfg, con, method, path, query, headers, body, day):
                                     int(cfg.get('max_extra_phones', 5)))
                 elif op == 'del_phone':
                     store.remove_phone(con, sid, int(f.get('phone_id', 0)))
+                elif op == 'add_alert':
+                    p = store.norm_phone(f.get('phone', ''))
+                    if not store.valid_phone(p):
+                        raise ValueError('מספר טלפון לא תקין')
+                    store.add_verified(con, sid, p, 'admin')
+                elif op == 'del_alert':
+                    store.remove_verified(con, sid, store.norm_phone(f.get('phone', '')))
                 else:
                     return 400, 'text/plain', b'bad op', {}
         except ValueError as e:

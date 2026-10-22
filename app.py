@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import admin  # noqa: E402
 import core  # noqa: E402
+import ivr  # noqa: E402
 import store  # noqa: E402
 
 CONFIG_PATH = os.environ.get('SHMARTPHONE_CONFIG', '/etc/shmartphone/app.json')
@@ -116,7 +117,8 @@ def make_handler(cfg):
             if url.path == '/':
                 return self.send(200, 'text/html; charset=utf-8', HOME_PAGE.encode())
 
-            if len(parts) == 2 and parts[0] == 'ivr' and hmac.compare_digest(parts[1], cfg['ivr_token']):
+            if len(parts) in (2, 3) and parts[0] == 'ivr' and hmac.compare_digest(parts[1], cfg['ivr_token']):
+                mode = parts[2] if len(parts) == 3 else 'activate'
                 params = {k: v[-1] for k, v in urllib.parse.parse_qs(url.query, keep_blank_values=True).items()}
                 if method == 'POST':
                     params.update({k: v[-1] for k, v in urllib.parse.parse_qs(
@@ -124,10 +126,12 @@ def make_handler(cfg):
                 con = store.connect(cfg['db_path'])
                 try:
                     with con:
-                        resp = core.handle_ivr(cfg, con, params, day)
+                        resp, wake_now = ivr.handle(cfg, con, params, day, mode)
                 finally:
                     con.close()
-                print('IVR', params.get('PBXcallStatus'), 'nm=' + params.get('nm', ''),
+                if wake_now:
+                    wake.set()
+                print('IVR', mode, params.get('PBXcallStatus'),
                       'types=' + ','.join(c.get('type', '') for c in resp), flush=True)
                 return self.json(200, resp)
 
@@ -171,6 +175,8 @@ def alert_worker(cfg, wake):
     while True:
         try:
             while core.process_one(cfg, cfg['db_path']):
+                pass
+            while core.process_message(cfg, cfg['db_path']):
                 pass
         except Exception as e:
             print('WORKER_ERROR', repr(e)[:300], flush=True)

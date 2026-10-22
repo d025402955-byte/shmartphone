@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import admin  # noqa: E402
 import core  # noqa: E402
 import importer  # noqa: E402
+import ivr  # noqa: E402
 import store  # noqa: E402
 
 DAY = datetime.date(2026, 10, 23)
@@ -34,10 +35,6 @@ class Base(unittest.TestCase):
     def tearDown(self):
         self.con.close()
 
-    def ivr(self, phone, call='c1', **extra):
-        p = {'PBXphone': phone, 'PBXnum': PBX, 'PBXcallId': call, 'PBXcallStatus': 'CALL', **extra}
-        with self.con:
-            return core.handle_ivr(self.cfg, self.con, p, DAY)
 
 
 class StoreTests(Base):
@@ -72,73 +69,186 @@ class StoreTests(Base):
 
 
 class IvrTests(Base):
-    def test_unknown_gets_trial_then_asked_for_number(self):
-        r = self.ivr('0521234567')
-        self.assertEqual(r[0]['type'], 'getDTMF')
-        self.assertEqual(r[0]['name'], 'alertnum')
-        sub = store.find_by_phone(self.con, '0521234567')
-        self.assertEqual(sub['status'], 'trial')
-        self.assertEqual(sub['expires'], '2026-10-30')
+    """Simulates Technoline: parameters accumulate during a call; each answer adds/overwrites one."""
 
-    def test_no_auto_trial(self):
-        self.cfg['auto_trial_days'] = 0
-        r = self.ivr('0521234567')
-        self.assertEqual(r[-1]['type'], 'hangup')
-        self.assertIsNone(store.find_by_phone(self.con, '0521234567'))
+    def call(self, phone, mode='activate', call='c1'):
+        self.params = {'PBXphone': phone, 'PBXnum': PBX, 'PBXcallId': call, 'PBXcallStatus': 'CALL'}
+        self.mode = mode
+        return self.send()
+
+    def send(self, **answer):
+        self.params.update(answer)
+        with self.con:
+            resp, self.woke = ivr.handle(self.cfg, self.con, dict(self.params), DAY, self.mode)
+        return resp
+
+    def types(self, r):
+        return [c['type'] for c in r]
+
+    def ask_name(self, r):
+        return [c for c in r if c['type'] == 'getDTMF'][-1]['name']
+
+    def sub_with(self, phone='0521234567', **kw):
+        with self.con:
+            return store.create_subscriber(self.con, main_phone=phone, **kw)
 
     def test_wrong_system_rejected(self):
         p = {'PBXphone': '0521234567', 'PBXnum': '0999', 'PBXcallId': 'x', 'PBXcallStatus': 'CALL'}
-        self.assertEqual(core.handle_ivr(self.cfg, self.con, p, DAY), [{'type': 'hangup'}])
+        self.assertEqual(ivr.handle(self.cfg, self.con, p, DAY)[0], [{'type': 'hangup'}])
 
-    def test_disabled_rejected(self):
-        with self.con:
-            store.create_subscriber(self.con, main_phone='0521234567', status='disabled')
-        r = self.ivr('0521234567')
+    def test_unknown_gets_trial_and_must_verify_first(self):
+        r = self.call('0521234567')
+        self.assertEqual(self.ask_name(r), 'vnum')
+        sub = store.find_by_phone(self.con, '0521234567')
+        self.assertEqual((sub['status'], sub['expires']), ('trial', '2026-10-30'))
+
+    def test_disabled_rejected_and_no_auto_trial(self):
+        self.sub_with(status='disabled')
+        self.assertEqual(self.call('0521234567')[-1]['type'], 'hangup')
+        self.cfg['auto_trial_days'] = 0
+        self.assertEqual(self.call('0539999999', call='c2')[-1]['type'], 'hangup')
+        self.assertIsNone(store.find_by_phone(self.con, '0539999999'))
+
+    def test_activate_requires_verified_then_code_flow(self):
+        sid = self.sub_with()
+        r = self.call('0521234567')
+        self.assertEqual(self.ask_name(r), 'vnum')
+        r = self.send(vnum='0501112222')
+        self.assertEqual(self.ask_name(r), 'vcode')
+        self.assertTrue(self.woke)
+        al = self.con.execute("SELECT * FROM alerts WHERE kind='verify'").fetchone()
+        code = self.con.execute('SELECT code FROM verifications').fetchone()[0]
+        self.assertEqual(al['alert_phone'], '0501112222')
+        self.assertIn(', '.join(code), json.loads(al['payload'])['text'])
+        r = self.send(vcode='0000' if code != '0000' else '1111')
+        self.assertEqual(self.ask_name(r), 'vcode')
+        r = self.send(vcode=code)  # correct -> continues to activate with one choice
+        self.assertEqual(self.ask_name(r), 'apick')
+        self.assertEqual(store.verified_phones(self.con, sid), ['0501112222'])
+        r = self.send(apick='1')
+        self.assertEqual(self.types(r), ['simpleMessage', 'noiseMonitor'])
+        self.assertEqual(r[-1]['roomId'], f's{sid}-0521234567')
+        self.assertEqual(r[-1]['alertUrl'], 'https://x.example/events/evtok')
+        r = self.send(nm='BUSY')
         self.assertEqual(r[-1]['type'], 'hangup')
 
-    def test_extra_phone_full_flow(self):
+    def test_verify_by_calling_from_that_phone(self):
+        sid = self.sub_with()
         with self.con:
-            sid = store.create_subscriber(self.con, main_phone='0521234567', status='active')
-            store.add_phone(self.con, sid, '0539999999')
-        self.assertEqual(self.ivr('0539999999')[0]['name'], 'alertnum')
-        # same number as caller rejected
-        r = self.ivr('0539999999', alertnum='0539999999')
-        self.assertEqual(r[0]['name'], 'alertnum')
-        r = self.ivr('0539999999', alertnum='0501112222')
-        self.assertEqual(r[-1]['type'], 'noiseMonitor')
-        self.assertEqual(r[-1]['alertUrl'], 'https://x.example/events/evtok')
-        self.assertEqual(r[-1]['roomId'], f's{sid}-0539999999')
-        self.assertEqual(store.find_by_phone(self.con, '0521234567')['alert_phone'], '0501112222')
-        # next call: confirm saved number
-        r = self.ivr('0539999999', call='c2')
-        self.assertEqual(r[0]['name'], 'conf')
-        self.assertIn({'digits': '0501112222'}, r[0]['files'])
-        r = self.ivr('0539999999', call='c2', conf='1')
-        self.assertEqual(r[-1]['type'], 'noiseMonitor')
-        r = self.ivr('0539999999', call='c3', conf='2')
-        self.assertEqual(r[0]['name'], 'alertnum')
+            store.add_phone(self.con, sid, '0533333333')
+        self.call('0533333333', mode='verify')
+        r = self.send(vnum='0533333333')
+        self.assertEqual(r[-1]['type'], 'hangup')
+        self.assertEqual(store.verified_phones(self.con, sid), ['0533333333'])
+        self.assertIsNone(self.con.execute("SELECT 1 FROM alerts WHERE kind='verify'").fetchone())
 
-    def test_bad_number_three_times_hangs_up(self):
-        with self.con:
-            store.create_subscriber(self.con, main_phone='0521234567')
-        for i in range(2):
-            self.assertEqual(self.ivr('0521234567', alertnum='12')[0]['name'], 'alertnum')
-        self.assertEqual(self.ivr('0521234567', alertnum='12')[-1]['type'], 'hangup')
+    def test_pending_code_on_later_call_and_rate_limit(self):
+        sid = self.sub_with()
+        self.call('0521234567', mode='verify')
+        self.send(vnum='0501112222')
+        code = self.con.execute('SELECT code FROM verifications').fetchone()[0]
+        r = self.send(vcode='SKIP')
+        self.assertEqual(r[-1]['type'], 'hangup')  # "enter later"
+        r = self.call('0521234567', mode='verify', call='c2')
+        self.assertEqual(self.ask_name(r), 'vcode')
+        r = self.send(vcode=code)
+        self.assertEqual(store.verified_phones(self.con, sid), ['0501112222'])
+        for i in range(2):  # limit is 3 code calls per hour, the first one included
+            r = self.call('0521234567', mode='verify', call=f'r{i}')
+            if self.ask_name(r) == 'vcode':  # a pending code is offered first; '#' = verify another number
+                r = self.send(vcode='SKIP')
+            self.assertEqual(self.ask_name(r), 'vnum')
+            self.send(vnum=f'05011100{i}0')
+        r = self.call('0521234567', mode='verify', call='r9')
+        self.send(vcode='SKIP')
+        self.assertEqual(self.send(vnum='0501119999')[-1]['type'], 'hangup')
+        self.assertEqual(self.con.execute('SELECT COUNT(*) FROM verifications').fetchone()[0], 3)
 
-    def test_monitor_result_and_hangup(self):
+    def test_pick_among_several(self):
+        sid = self.sub_with()
         with self.con:
-            store.create_subscriber(self.con, main_phone='0521234567', alert_phone='0501112222')
-        self.ivr('0521234567', conf='1')
-        self.assertEqual(self.ivr('0521234567', conf='1', nm='BUSY')[-1]['type'], 'hangup')
-        p = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'c1', 'PBXcallStatus': 'HANGUP'}
-        self.assertEqual(core.handle_ivr(self.cfg, self.con, p, DAY), [])
+            store.add_verified(self.con, sid, '0501111111', 'admin')
+            store.add_verified(self.con, sid, '0502222222', 'admin')
+            store.add_verified(self.con, sid, '0521234567', 'admin')  # caller itself is excluded
+        r = self.call('0521234567')
+        self.assertEqual(sum(1 for f in r[0]['files'] if 'digits' in f), 2)
+        r = self.send(apick='9')
+        self.assertEqual(self.ask_name(r), 'vnum')
+        self.call('0521234567', call='c2')
+        r = self.send(apick='2')
+        self.assertEqual(r[-1]['type'], 'noiseMonitor')
+
+    def test_listen(self):
+        sid = self.sub_with()
+        with self.con:
+            store.add_verified(self.con, sid, '0501112222', 'admin')
+        self.assertEqual(self.call('0501112222', mode='listen', call='L0')[-1]['type'], 'hangup')  # nothing active
+        self.call('0521234567', call='M1')
+        self.send(apick='1')
+        r = self.call('0501112222', mode='listen', call='L1')
+        self.assertEqual(r[-1], {'type': 'noiseMonitorJoin', 'name': 'join', 'roomId': f's{sid}-0521234567'})
+        self.assertEqual(self.send(join='LEFT'), [{'type': 'hangup'}])
+        self.assertEqual(self.call('0599999999', mode='listen', call='L2')[-1]['type'], 'hangup')  # stranger
+
+    def test_phones_menu(self):
+        sid = self.sub_with()
+        self.call('0521234567', mode='phones')
+        r = self.send(phm='1')
+        self.assertEqual(self.ask_name(r), 'phn')
+        r = self.send(phn='0537777777')
+        self.assertEqual(self.ask_name(r), 'phm')
+        self.assertEqual(store.find_by_phone(self.con, '0537777777')['id'], sid)
+        r = self.send(phm='3')
+        self.assertEqual(self.ask_name(r), 'phr')
+        r = self.send(phr='1')
+        self.assertIsNone(store.find_by_phone(self.con, '0537777777'))
+        self.assertEqual(self.send(phm='0')[-1]['type'], 'hangup')
+
+    def test_account(self):
+        sid = self.sub_with(status='disabled', expires='2026-12-01')
+        with self.con:
+            store.add_verified(self.con, sid, '0501112222', 'admin')
+        self.call('0521234567', mode='account')
+        r = self.send(acm='1')
+        spoken = ' '.join(f.get('text', '') for c in r for f in c.get('files', []))
+        self.assertIn('מושבת', spoken)
+        self.assertIn('1 בדצמבר 2026', spoken)
+        r = self.send(acm='2')
+        self.assertEqual(self.ask_name(r), 'acr')
+        self.send(acr='1')
+        self.assertEqual(store.verified_phones(self.con, sid), [])
+        r = self.send(acm='4')  # disabled -> cannot verify
+        self.assertEqual(self.ask_name(r), 'acm')
+
+    def test_menu_info_and_message(self):
+        r = self.call('0599999999', mode='menu')
+        self.assertEqual(r[0]['type'], 'simpleMenu')
+        r = self.send(menu='3')
+        self.assertEqual(r[-1]['type'], 'hangup')
+        self.call('0599999999', mode='message', call='m2')
+        r = self.send()
+        self.assertEqual(r[0]['type'], 'record')
+        r = self.send(rec='file1', FILEID_rec='777', FILE_rec='file1', DURATION_rec='12')
+        self.assertEqual(r[-1]['type'], 'hangup')
+        m = self.con.execute('SELECT * FROM messages').fetchone()
+        self.assertEqual((m['file_id'], m['state'], m['duration']), ('777', 'stored', 12.0))
+
+    def test_message_saved_on_hangup(self):
+        self.call('0599999999', mode='message')
+        self.send(PBXcallStatus='HANGUP', FILEID_rec='888', DURATION_rec='5')
+        self.assertEqual(self.con.execute('SELECT file_id FROM messages').fetchone()[0], '888')
 
 
 class EventTests(Base):
     def start(self):
         with self.con:
-            sid = store.create_subscriber(self.con, main_phone='0521234567', alert_phone='0501112222')
-        self.ivr('0521234567', conf='1')
+            sid = store.create_subscriber(self.con, main_phone='0521234567')
+            store.add_verified(self.con, sid, '0501112222', 'admin')
+        p = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'c1', 'PBXcallStatus': 'CALL'}
+        with self.con:
+            ivr.handle(self.cfg, self.con, p, DAY)
+        with self.con:
+            ivr.handle(self.cfg, self.con, {**p, 'apick': '1'}, DAY)
         return sid
 
     def ev(self, kind, **kw):
@@ -174,14 +284,14 @@ class EventTests(Base):
         self.con.commit()
         calls = []
 
-        def fake(cfg, kind, phone):
+        def fake(cfg, kind, phone, text=None):
             calls.append((kind, phone))
             return 'sent', {'campaignId': '1'}
         self.assertTrue(core.process_one(self.cfg, self.db, fake, log=lambda *a, **k: None))
         self.assertFalse(core.process_one(self.cfg, self.db, fake, log=lambda *a, **k: None))
         self.assertEqual(calls, [('noise', '0501112222')])
 
-        def boom(cfg, kind, phone):
+        def boom(cfg, kind, phone, text=None):
             raise TimeoutError()
         self.ev('disconnected')
         self.con.commit()
@@ -314,3 +424,19 @@ class AdminTests(Base):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class EmailTests(Base):
+    def test_message_email_worker(self):
+        self.cfg['smtp'] = {'host': 'h', 'user': 'u', 'password': 'p', 'to': 't@x'}
+        with self.con:
+            self.con.execute("INSERT INTO messages(phone,file_id,duration,created,state) VALUES('0521',?,3,?,'pending')",
+                             ('9', time.time()))
+        sent = []
+        ok = core.process_message(self.cfg, self.db, fetch=lambda c, f: b'MP3', mail=lambda c, r, a: sent.append(a),
+                                  log=lambda *a, **k: None)
+        self.assertTrue(ok)
+        self.assertEqual(sent, [b'MP3'])
+        self.assertEqual(self.con.execute('SELECT state FROM messages').fetchone()[0], 'emailed')
+        del self.cfg['smtp']
+        self.assertFalse(core.process_message(self.cfg, self.db))

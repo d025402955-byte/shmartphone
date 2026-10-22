@@ -57,9 +57,45 @@ CREATE TABLE IF NOT EXISTS audit(
   action TEXT,
   details TEXT
 );
+CREATE TABLE IF NOT EXISTS alert_phones(
+  id INTEGER PRIMARY KEY,
+  subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE,
+  phone TEXT NOT NULL,
+  verified REAL NOT NULL,
+  method TEXT NOT NULL DEFAULT '',
+  UNIQUE(subscriber_id, phone)
+);
+CREATE TABLE IF NOT EXISTS verifications(
+  id INTEGER PRIMARY KEY,
+  subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE,
+  phone TEXT NOT NULL,
+  code TEXT NOT NULL,
+  created REAL NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  done REAL
+);
+CREATE TABLE IF NOT EXISTS messages(
+  id INTEGER PRIMARY KEY,
+  subscriber_id INTEGER,
+  phone TEXT,
+  call_id TEXT,
+  file_id TEXT,
+  file_name TEXT,
+  duration REAL,
+  created REAL NOT NULL,
+  state TEXT NOT NULL,
+  result TEXT
+);
 CREATE INDEX IF NOT EXISTS alerts_state ON alerts(state);
 CREATE INDEX IF NOT EXISTS subs_legacy ON subscribers(legacy_id);
+CREATE INDEX IF NOT EXISTS alert_phones_phone ON alert_phones(phone);
+CREATE INDEX IF NOT EXISTS messages_state ON messages(state);
 """
+
+MIGRATIONS = {
+    'sessions': [('step', 'TEXT'), ('mode', 'TEXT'), ('data', 'TEXT')],
+    'alerts': [('payload', 'TEXT')],
+}
 
 PLANS = {'monthly': 'חודשי', 'annual': 'שנתי', 'free': 'חינם', 'trial': 'ניסיון'}
 STATUSES = {'active': 'פעיל', 'trial': 'תקופת ניסיון', 'disabled': 'מושבת', 'cancelled': 'מבוטל'}
@@ -77,8 +113,32 @@ def init(path):
     con = connect(path)
     con.execute('PRAGMA journal_mode=WAL')
     con.executescript(SCHEMA)
+    for table, cols in MIGRATIONS.items():
+        have = {r[1] for r in con.execute(f'PRAGMA table_info({table})')}
+        for name, typ in cols:
+            if name not in have:
+                con.execute(f'ALTER TABLE {table} ADD COLUMN {name} {typ}')
     con.commit()
     con.close()
+
+
+# ---------- verified alert phones ----------
+
+def verified_phones(con, sid):
+    return [r['phone'] for r in con.execute(
+        'SELECT phone FROM alert_phones WHERE subscriber_id=? ORDER BY verified DESC', (sid,))]
+
+
+def add_verified(con, sid, phone, method):
+    con.execute('INSERT INTO alert_phones(subscriber_id,phone,verified,method) VALUES(?,?,?,?) '
+                'ON CONFLICT(subscriber_id,phone) DO UPDATE SET verified=excluded.verified, method=excluded.method',
+                (sid, phone, time.time(), method))
+    audit(con, 'verify_phone', {'id': sid, 'phone': phone, 'method': method})
+
+
+def remove_verified(con, sid, phone):
+    con.execute('DELETE FROM alert_phones WHERE subscriber_id=? AND phone=?', (sid, phone))
+    audit(con, 'unverify_phone', {'id': sid, 'phone': phone})
 
 
 # ---------- phones and dates ----------

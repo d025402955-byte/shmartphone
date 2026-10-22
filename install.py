@@ -185,6 +185,34 @@ def set_password():
     run('systemctl', 'restart', SERVICE)
 
 
+def set_smtp():
+    """Email settings for customer-service messages (option 9)."""
+    with open(NEW_CFG, encoding='utf-8') as f:
+        cfg = json.load(f)
+    print('Gmail: host smtp.gmail.com, port 587, user = the gmail address, password = an App Password')
+    host = input('smtp host [smtp.gmail.com]: ').strip() or 'smtp.gmail.com'
+    port = int(input('smtp port [587]: ').strip() or 587)
+    user = input('smtp user (sending email address): ').strip()
+    password = getpass.getpass('smtp password (not shown): ').strip()
+    to = input('send messages to (email address): ').strip()
+    cfg['smtp'] = {'host': host, 'port': port, 'user': user, 'password': password, 'from': user, 'to': to}
+    import smtplib
+    try:
+        srv = smtplib.SMTP_SSL(host, port, timeout=20) if port == 465 else smtplib.SMTP(host, port, timeout=20)
+        with srv:
+            if port != 465:
+                srv.starttls()
+            srv.login(user, password)
+        print('login OK')
+    except Exception as e:
+        print('login FAILED:', repr(e)[:200])
+        if input('save anyway? (y/n): ').strip() != 'y':
+            return
+    write_config(cfg, service_user())
+    run('systemctl', 'restart', SERVICE)
+    print('saved; service restarted')
+
+
 def rollback():
     if os.path.exists(DROPIN):
         os.remove(DROPIN)
@@ -197,5 +225,5 @@ if __name__ == '__main__':
     if os.geteuid() != 0:
         sys.exit('run as root')
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'install'
-    {'install': install, 'password': set_password, 'rollback': rollback,
+    {'install': install, 'password': set_password, 'rollback': rollback, 'smtp': set_smtp,
      'status': lambda: print(run('systemctl', 'status', SERVICE, '--no-pager', check=False))}[cmd]()
