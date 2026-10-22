@@ -1,0 +1,267 @@
+"""Subscriber and event storage (SQLite, stdlib only)."""
+import calendar
+import datetime
+import json
+import re
+import sqlite3
+import time
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS subscribers(
+  id INTEGER PRIMARY KEY,
+  legacy_id TEXT,
+  name TEXT NOT NULL DEFAULT '',
+  main_phone TEXT NOT NULL UNIQUE,
+  plan TEXT NOT NULL DEFAULT 'monthly',
+  status TEXT NOT NULL DEFAULT 'active',
+  amount REAL,
+  expires TEXT,
+  next_charge TEXT,
+  alert_phone TEXT,
+  notes TEXT NOT NULL DEFAULT '',
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS phones(
+  id INTEGER PRIMARY KEY,
+  subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE,
+  phone TEXT NOT NULL UNIQUE,
+  label TEXT NOT NULL DEFAULT '',
+  created REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions(
+  call_id TEXT PRIMARY KEY,
+  subscriber_id INTEGER,
+  phone TEXT,
+  room_id TEXT,
+  alert_phone TEXT,
+  tries INTEGER NOT NULL DEFAULT 0,
+  started REAL,
+  ended REAL,
+  status TEXT
+);
+CREATE TABLE IF NOT EXISTS alerts(
+  id INTEGER PRIMARY KEY,
+  unique_key TEXT UNIQUE,
+  subscriber_id INTEGER,
+  call_id TEXT,
+  kind TEXT,
+  alert_phone TEXT,
+  created REAL,
+  state TEXT NOT NULL,
+  result TEXT
+);
+CREATE TABLE IF NOT EXISTS audit(
+  id INTEGER PRIMARY KEY,
+  ts REAL,
+  action TEXT,
+  details TEXT
+);
+CREATE INDEX IF NOT EXISTS alerts_state ON alerts(state);
+CREATE INDEX IF NOT EXISTS subs_legacy ON subscribers(legacy_id);
+"""
+
+PLANS = {'monthly': 'חודשי', 'annual': 'שנתי', 'free': 'חינם', 'trial': 'ניסיון'}
+STATUSES = {'active': 'פעיל', 'trial': 'תקופת ניסיון', 'disabled': 'מושבת', 'cancelled': 'מבוטל'}
+
+
+def connect(path):
+    con = sqlite3.connect(path, timeout=15)
+    con.row_factory = sqlite3.Row
+    con.execute('PRAGMA foreign_keys=ON')
+    con.execute('PRAGMA busy_timeout=15000')
+    return con
+
+
+def init(path):
+    con = connect(path)
+    con.execute('PRAGMA journal_mode=WAL')
+    con.executescript(SCHEMA)
+    con.commit()
+    con.close()
+
+
+# ---------- phones and dates ----------
+
+def norm_phone(value):
+    """Normalize an Israeli phone number to local digits (05xxxxxxxx / 0xxxxxxxx)."""
+    s = str(value or '').strip()
+    if re.fullmatch(r'\d+\.0+', s):  # Excel numeric cell like 533157319.0
+        s = s.split('.')[0]
+    d = ''.join(c for c in s if c.isdigit())
+    if d.startswith('972'):
+        d = '0' + d[3:]
+    if d and not d.startswith('0') and len(d) in (8, 9):
+        d = '0' + d  # leading zero lost in a spreadsheet
+    return d
+
+
+def valid_phone(d):
+    return bool(d) and d.startswith('0') and len(d) in (9, 10)
+
+
+def today(tz=None):
+    return datetime.datetime.now(tz).date()
+
+
+def add_months(d, n):
+    m = d.month - 1 + n
+    y = d.year + m // 12
+    m = m % 12 + 1
+    return d.replace(year=y, month=m, day=min(d.day, calendar.monthrange(y, m)[1]))
+
+
+def parse_date(value):
+    """Accept YYYY-MM-DD[ hh:mm:ss], DD/MM/YYYY, or an Excel serial number."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if 20000 < float(value) < 80000:
+            return (datetime.date(1899, 12, 30) + datetime.timedelta(days=int(float(value)))).isoformat()
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    if re.fullmatch(r'\d{5}(\.\d+)?', s):
+        return parse_date(float(s))
+    m = re.match(r'(\d{4})-(\d{1,2})-(\d{1,2})', s)
+    if m:
+        y, mo, dd = map(int, m.groups())
+    else:
+        m = re.match(r'(\d{1,2})[/.](\d{1,2})[/.](\d{4})', s)
+        if not m:
+            return None
+        dd, mo, y = map(int, m.groups())
+    try:
+        return datetime.date(y, mo, dd).isoformat()
+    except ValueError:
+        return None
+
+
+# ---------- subscribers ----------
+
+def audit(con, action, details):
+    con.execute('INSERT INTO audit(ts,action,details) VALUES(?,?,?)',
+                (time.time(), action, json.dumps(details, ensure_ascii=False)))
+
+
+def find_by_phone(con, phone):
+    """Return the subscriber row that owns this phone (main or extra), or None."""
+    phone = norm_phone(phone)
+    if not phone:
+        return None
+    row = con.execute('SELECT * FROM subscribers WHERE main_phone=?', (phone,)).fetchone()
+    if row:
+        return row
+    return con.execute('SELECT s.* FROM subscribers s JOIN phones p ON p.subscriber_id=s.id '
+                       'WHERE p.phone=?', (phone,)).fetchone()
+
+
+def phone_owner(con, phone):
+    """Subscriber id already using this phone anywhere, or None."""
+    row = find_by_phone(con, phone)
+    return row['id'] if row else None
+
+
+def authorization(sub, day, enforce_active_expiry=False):
+    """(allowed, reason). Active = allowed; trial = allowed until expiry; disabled = not."""
+    if sub is None:
+        return False, 'unknown'
+    status, exp = sub['status'], sub['expires']
+    if status in ('disabled', 'cancelled'):
+        return False, 'disabled'
+    if status == 'trial':
+        if exp and exp >= day.isoformat():
+            return True, ''
+        return False, 'trial_expired'
+    if status == 'active':
+        if sub['plan'] == 'free' or not enforce_active_expiry or not exp:
+            return True, ''
+        return (exp >= day.isoformat()), 'expired'
+    return False, 'unknown'
+
+
+def create_subscriber(con, *, main_phone, name='', plan='monthly', status='active', amount=None,
+                      expires=None, next_charge=None, alert_phone=None, notes='', legacy_id=None):
+    main_phone = norm_phone(main_phone)
+    if not valid_phone(main_phone):
+        raise ValueError('מספר טלפון ראשי לא תקין')
+    if phone_owner(con, main_phone):
+        raise ValueError('המספר כבר רשום אצל מנוי אחר')
+    if alert_phone:
+        alert_phone = norm_phone(alert_phone)
+        if not valid_phone(alert_phone):
+            raise ValueError('מספר להתראות לא תקין')
+    now = time.time()
+    cur = con.execute(
+        'INSERT INTO subscribers(legacy_id,name,main_phone,plan,status,amount,expires,next_charge,'
+        'alert_phone,notes,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+        (legacy_id, name or '', main_phone, plan, status, amount, expires, next_charge,
+         alert_phone or None, notes or '', now, now))
+    audit(con, 'create', {'id': cur.lastrowid, 'phone': main_phone, 'plan': plan, 'status': status})
+    return cur.lastrowid
+
+
+def update_subscriber(con, sid, **fields):
+    allowed = {'name', 'main_phone', 'plan', 'status', 'amount', 'expires', 'next_charge',
+               'alert_phone', 'notes'}
+    fields = {k: v for k, v in fields.items() if k in allowed}
+    if 'main_phone' in fields:
+        p = norm_phone(fields['main_phone'])
+        if not valid_phone(p):
+            raise ValueError('מספר טלפון ראשי לא תקין')
+        owner = phone_owner(con, p)
+        if owner and owner != sid:
+            raise ValueError('המספר כבר רשום אצל מנוי אחר')
+        fields['main_phone'] = p
+    if fields.get('alert_phone'):
+        p = norm_phone(fields['alert_phone'])
+        if not valid_phone(p):
+            raise ValueError('מספר להתראות לא תקין')
+        fields['alert_phone'] = p
+    elif 'alert_phone' in fields:
+        fields['alert_phone'] = None
+    if not fields:
+        return
+    fields['updated'] = time.time()
+    cols = ','.join(f'{k}=?' for k in fields)
+    con.execute(f'UPDATE subscribers SET {cols} WHERE id=?', (*fields.values(), sid))
+    audit(con, 'update', {'id': sid, **{k: v for k, v in fields.items() if k != 'updated'}})
+
+
+def extend(con, sid, months, day):
+    """Record a payment: extend expiry by N months from max(today, current expiry); set active."""
+    sub = con.execute('SELECT * FROM subscribers WHERE id=?', (sid,)).fetchone()
+    base = day
+    if sub['expires'] and sub['expires'] > day.isoformat():
+        base = datetime.date.fromisoformat(sub['expires'])
+    new = add_months(base, months)
+    plan = 'annual' if months >= 12 else 'monthly'
+    con.execute('UPDATE subscribers SET expires=?, next_charge=?, status=?, plan=?, updated=? WHERE id=?',
+                (new.isoformat(), new.isoformat(), 'active', plan, time.time(), sid))
+    audit(con, 'payment', {'id': sid, 'months': months, 'expires': new.isoformat()})
+    return new
+
+
+def add_phone(con, sid, phone, label='', max_phones=5):
+    p = norm_phone(phone)
+    if not valid_phone(p):
+        raise ValueError('מספר טלפון לא תקין')
+    if phone_owner(con, p):
+        raise ValueError('המספר כבר רשום')
+    n = con.execute('SELECT COUNT(*) FROM phones WHERE subscriber_id=?', (sid,)).fetchone()[0]
+    if n >= max_phones:
+        raise ValueError(f'הגעת למקסימום {max_phones} טלפונים נוספים למנוי')
+    con.execute('INSERT INTO phones(subscriber_id,phone,label,created) VALUES(?,?,?,?)',
+                (sid, p, label or '', time.time()))
+    audit(con, 'add_phone', {'id': sid, 'phone': p})
+
+
+def remove_phone(con, sid, phone_id):
+    con.execute('DELETE FROM phones WHERE id=? AND subscriber_id=?', (phone_id, sid))
+    audit(con, 'remove_phone', {'id': sid, 'phone_id': phone_id})
+
+
+def delete_subscriber(con, sid):
+    con.execute('DELETE FROM subscribers WHERE id=?', (sid,))
+    audit(con, 'delete', {'id': sid})

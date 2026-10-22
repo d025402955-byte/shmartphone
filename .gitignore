@@ -1,0 +1,7 @@
+__pycache__/
+*.db
+*.db-*
+*.json
+*.xls
+*.xlsx
+*.csv
