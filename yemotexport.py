@@ -18,6 +18,8 @@ BASE = 'https://www.call2all.co.il/ym/api/'
 OUT = '/var/lib/shmartphone/yemot'
 KEEP = ('.wav', '.mp3', '.ini', '.tts', '.txt', '.ogg')
 MAX_FILES = 20000
+# customer room recordings and the recycle bin are not system recordings: never copied
+SKIP_DIRS = ('confbridgeBaby', 'Trash', 'ConfBridge', 'ApiRecord', 'Record')
 
 
 def call(token, cmd, **params):
@@ -62,6 +64,9 @@ def main():
             errors += 1
             continue
         for name, what in items(listing, 'dirs'):
+            if name in SKIP_DIRS:
+                print('skip', path + name)
+                continue
             sub = what or (path.rstrip('/') + '/' + name)
             if not sub.startswith('ivr2:'):
                 sub = 'ivr2:' + sub
