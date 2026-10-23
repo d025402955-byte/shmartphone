@@ -214,6 +214,12 @@ def sub_page(cfg, con, sid, msg=None, err=None):
         f"<tr><td>{E(v['phone'])}</td><td class='muted'>{fmt_ts(v['verified'])} · {E(v['method'])}</td><td><form method='post' "
         f"action='/admin/sub/{sid}/action'>{hidden(cfg)}<input type='hidden' name='phone' value='{E(v['phone'])}'>"
         f"<button class='btn2' name='op' value='del_alert'>הסרה</button></form></td></tr>" for v in ver)
+    pays = con.execute('SELECT * FROM payments WHERE subscriber_id=? ORDER BY id DESC LIMIT 15', (sid,)).fetchall()
+    py = ''.join(f"<tr><td>{fmt_ts(x['created'])}</td><td>{E(store.PLANS.get(x['plan'], x['plan'] or ''))}</td>"
+                 f"<td>{x['amount'] or ''}</td><td>{E(x['source'])}</td><td>{E(x['confirm'] or '')}</td>"
+                 f"<td>{fmt_date(x['paid_until'])}</td></tr>" for x in pays)
+    billing = {'nedarim': 'נדרים פלוס דרך המערכת', 'legacy': 'רישומון'}.get(
+        s['billing'] or ('legacy' if s['legacy_id'] else ''), s['billing'] or 'לא הוגדר')
     noise = con.execute('SELECT * FROM noise_events WHERE subscriber_id=? ORDER BY started DESC LIMIT 15', (sid,)).fetchall()
     nz = ''.join(f"<tr><td>{fmt_ts(n['started'])}</td><td>{int(round(n['noise_sec'] or 0))} שנ'</td>"
                  f"<td>{n['peak'] or ''}</td><td>{'יש הקלטה' if n['file_id'] else ''}</td></tr>" for n in noise)
@@ -233,6 +239,8 @@ def sub_page(cfg, con, sid, msg=None, err=None):
 <form class="row" method="post" action="/admin/sub/{sid}/action" style="margin-top:10px">{hidden(cfg)}
 <label>טלפון (אימות ידני על ידי המנהל)<input name="phone" inputmode="tel"></label>
 <button name="op" value="add_alert">אימות והוספה</button></form></div>
+<div class="card"><h3>תשלומים</h3><p class="muted">גבייה: {E(billing)}{' · הוראת קבע ' + E(s['keva_id']) if s['keva_id'] else ''}</p>
+<div class="wrap"><table><tr><th>זמן</th><th>מסלול</th><th>סכום</th><th>מקור</th><th>אישור</th><th>בתוקף עד</th></tr>{py}</table></div></div>
 <div class="card"><h3>אירועי רעש אחרונים</h3><div class="wrap"><table><tr><th>זמן</th><th>משך</th><th>עוצמה</th><th></th></tr>{nz}</table></div></div>
 <div class="card"><h3>שיחות אחרונות</h3><div class="wrap"><table><tr><th>התחלה</th><th>סיום</th><th>מטלפון</th><th>התראות ל</th><th>מצב</th></tr>{ss}</table></div></div>
 <div class="card"><h3>התראות אחרונות</h3><div class="wrap"><table><tr><th>זמן</th><th>סוג</th><th>אל</th><th>מצב</th></tr>{al}</table></div></div>""",

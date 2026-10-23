@@ -99,6 +99,20 @@ CREATE TABLE IF NOT EXISTS noise_events(
   created REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS noise_sub ON noise_events(subscriber_id, started);
+CREATE TABLE IF NOT EXISTS payments(
+  id INTEGER PRIMARY KEY,
+  subscriber_id INTEGER REFERENCES subscribers(id) ON DELETE SET NULL,
+  source TEXT NOT NULL,
+  plan TEXT,
+  amount REAL,
+  confirm TEXT,
+  transaction_id TEXT UNIQUE,
+  keva_id TEXT,
+  paid_until TEXT,
+  created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS payments_confirm ON payments(confirm);
+CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, value TEXT);
 CREATE INDEX IF NOT EXISTS alerts_state ON alerts(state);
 CREATE INDEX IF NOT EXISTS subs_legacy ON subscribers(legacy_id);
 CREATE INDEX IF NOT EXISTS alert_phones_phone ON alert_phones(phone);
@@ -108,7 +122,10 @@ CREATE INDEX IF NOT EXISTS messages_state ON messages(state);
 MIGRATIONS = {
     'sessions': [('step', 'TEXT'), ('mode', 'TEXT'), ('data', 'TEXT')],
     'alerts': [('payload', 'TEXT')],
+    'subscribers': [('billing', 'TEXT'), ('keva_id', 'TEXT')],
 }
+
+GRACE_DAYS = 5  # a paid subscription keeps working this many days after its paid-until date
 
 PLANS = {'monthly': 'חודשי', 'annual': 'שנתי', 'free': 'חינם', 'trial': 'ניסיון'}
 STATUSES = {'active': 'פעיל', 'trial': 'תקופת ניסיון', 'disabled': 'מושבת', 'cancelled': 'מבוטל'}
@@ -248,10 +265,40 @@ def authorization(sub, day, enforce_active_expiry=False):
             return True, ''
         return False, 'trial_expired'
     if status == 'active':
-        if sub['plan'] == 'free' or not enforce_active_expiry or not exp:
+        if sub['plan'] == 'free' or not exp:
+            return True, ''
+        billed_here = 'billing' in sub.keys() and sub['billing'] == 'nedarim'
+        if billed_here:  # paid through this system: enforce paid-until + grace
+            limit = (day - datetime.timedelta(days=GRACE_DAYS)).isoformat()
+            return (exp >= limit), 'expired'
+        if not enforce_active_expiry:
             return True, ''
         return (exp >= day.isoformat()), 'expired'
     return False, 'unknown'
+
+
+def record_payment(con, sid, *, source, months, amount, confirm=None, transaction_id=None, keva_id=None,
+                   day=None):
+    """Extend a subscription after a successful charge. Idempotent per transaction / confirmation."""
+    day = day or datetime.date.today()
+    if transaction_id and con.execute('SELECT 1 FROM payments WHERE transaction_id=?', (transaction_id,)).fetchone():
+        return None
+    if confirm:
+        row = con.execute('SELECT * FROM payments WHERE confirm=? AND subscriber_id=?', (confirm, sid)).fetchone()
+        if row:  # the same charge seen twice (phone result + Nedarim sync)
+            con.execute('UPDATE payments SET transaction_id=COALESCE(transaction_id,?), keva_id=COALESCE(keva_id,?) '
+                        'WHERE id=?', (transaction_id, keva_id, row['id']))
+            if keva_id:
+                con.execute('UPDATE subscribers SET keva_id=? WHERE id=?', (keva_id, sid))
+            return None
+    new = extend(con, sid, months, day)
+    plan = 'annual' if months >= 12 else 'monthly'
+    con.execute('UPDATE subscribers SET billing=?, amount=?, keva_id=COALESCE(?,keva_id) WHERE id=?',
+                ('nedarim', amount, keva_id, sid))
+    con.execute('INSERT INTO payments(subscriber_id,source,plan,amount,confirm,transaction_id,keva_id,paid_until,created) '
+                'VALUES(?,?,?,?,?,?,?,?,?)',
+                (sid, source, plan, amount, confirm, transaction_id, keva_id, new.isoformat(), time.time()))
+    return new
 
 
 def create_subscriber(con, *, main_phone, name='', plan='monthly', status='active', amount=None,

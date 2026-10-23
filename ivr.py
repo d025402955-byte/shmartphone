@@ -10,6 +10,7 @@ Each menu option is its own Technoline API extension pointing to /ivr/<token>/<m
   account   6  account status, alert numbers, phones
   message   9  record a message for customer service (emailed)
   history      noise history: recent noise events, with their recordings
+  pay          join / renew a paid subscription (card by phone through Technoline -> Nedarim Plus)
 
 Per-call state is kept in the sessions table (step + data), so stale request
 parameters can never be mistaken for new answers.
@@ -21,7 +22,7 @@ import time
 
 import store
 
-MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history')
+MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history', 'pay')
 MENU_KEYS = {'1': 'activate', '2': 'listen', '3': 'info', '4': 'phones', '5': 'verify', '6': 'account',
              '9': 'message'}
 HEB_MONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר',
@@ -97,6 +98,14 @@ TEXTS = {
     'message_prompt': 'השאירו הודעה לשירות הלקוחות, ובסיומה הקישו סולמית.',
     'message_thanks': 'ההודעה התקבלה. נחזור אליכם בהקדם. תודה.',
     'goodbye': 'להתראות.',
+    'account_pay': 'להצטרפות או לחידוש מנוי בתשלום הקישו 5.',
+    'pay_menu': 'למנוי חודשי ב-{monthly} שקלים לחודש, בהוראת קבע באשראי, הקישו 1. '
+                'למנוי שנתי ב-{annual} שקלים, בתשלום אחד, הקישו 2. לחזרה הקישו 0.',
+    'pay_card_intro': 'נעבור עכשיו להקשת פרטי כרטיס האשראי.',
+    'pay_failed': 'התשלום לא הושלם. אפשר לנסות שוב בכל עת.',
+    'pay_ok_monthly': 'תודה. המנוי החודשי הופעל, והוא בתוקף עד {date}. החיוב יתחדש מדי חודש.',
+    'pay_ok_annual': 'תודה. המנוי השנתי הופעל, והוא בתוקף עד {date}.',
+    'pay_next': 'להפעלת השמרטפון התקשרו שוב ובחרו 1. להתראות.',
     'history_none': 'לא נרשמו אירועי רעש ביממה האחרונה.',
     'history_intro': 'ביממה האחרונה נרשמו {n} אירועי רעש. מתחילים מהאחרון. '
                      'בכל רגע: לבא הקישו 3, לקודם 1, לשמיעה חוזרת 2, לזמן ופרטי ההקלטה 5, לסיום 0.',
@@ -193,10 +202,16 @@ class Call:
             ok, reason = store.authorization(sub, self.day, self.cfg.get('enforce_active_expiry', False))
             if not ok:
                 key = reason if reason in TEXTS else 'disabled'
+                if self.payments_on():
+                    self.bind(sub)
+                    return None, None, self.pay_menu(sub, t(self.cfg, key))
                 return None, None, hangup(self.cfg, t(self.cfg, key), t(self.cfg, 'renew'))
+        self.bind(sub)
+        return sub, intro, None
+
+    def bind(self, sub):
         if self.sess is None or self.sess['subscriber_id'] != sub['id']:
             self.save(self.sess['step'] if self.sess else None, subscriber_id=sub['id'])
-        return sub, intro, None
 
     # ----- dispatch -----
     def run(self, mode):
@@ -214,7 +229,8 @@ class Call:
             'ph_add': ('phn', self.on_phones_add), 'ph_rm': ('phr', self.on_phones_rm),
             'acc_menu': ('acm', self.on_account_menu), 'acc_rm': ('acr', self.on_account_rm),
             'recording': ('rec', self.on_record), 'his_nav': ('hnav', self.on_history_nav),
-            'his_sub': ('hsub', self.on_history_sub),
+            'his_sub': ('hsub', self.on_history_sub), 'pay_plan': ('pplan', self.on_pay_plan),
+            'paying': ('payment', self.on_payment),
         }
         if step in handlers and handlers[step][0] in p:
             return handlers[step][1](p[handlers[step][0]])
@@ -225,7 +241,8 @@ class Call:
     def entry(self, mode):
         return {'menu': self.menu, 'activate': self.activate, 'listen': self.listen, 'info': self.info,
                 'phones': self.phones, 'verify': self.verify, 'account': self.account,
-                'message': self.message, 'history': self.history}.get(mode, self.activate)()
+                'message': self.message, 'history': self.history,
+                'pay': self.pay_menu}.get(mode, self.activate)()
 
     def on_hangup(self):
         if self.sess:
@@ -619,7 +636,73 @@ class Call:
         if err:
             return err
         self.save('acc_menu')
-        return [ask('acm', [prefix, t(self.cfg, 'account_menu')])]
+        return [ask('acm', [prefix, t(self.cfg, 'account_menu'),
+                            t(self.cfg, 'account_pay') if self.payments_on() else None])]
+
+    # ----- payments (Technoline creditCard module -> Nedarim Plus) -----
+    def payments_on(self):
+        return bool(self.cfg.get('payments'))
+
+    def prices(self):
+        p = self.cfg.get('payments') or {}
+        return float(p.get('monthly', 8.9)), float(p.get('annual', 82))
+
+    @staticmethod
+    def money(x):
+        return ('%.2f' % x).rstrip('0').rstrip('.')
+
+    def pay_menu(self, sub=None, prefix=None):
+        if sub is None:
+            sub, _, err = self.subscriber(auto_trial=True, allow_inactive=True)
+            if err:
+                return err
+        monthly, annual = self.prices()
+        self.reset_tries()
+        self.save('pay_plan')
+        return [ask('pplan', [prefix, t(self.cfg, 'pay_menu', monthly=self.money(monthly),
+                                         annual=self.money(annual))], timeout=8)]
+
+    def on_pay_plan(self, key):
+        sub, _, err = self.subscriber(auto_trial=True, allow_inactive=True)
+        if err:
+            return err
+        if key not in ('1', '2'):
+            if key != '0' and self.retry():
+                return self.pay_menu(sub, t(self.cfg, 'bad_key'))
+            return hangup(self.cfg, t(self.cfg, 'goodbye'))
+        monthly, annual = self.prices()
+        p = self.cfg.get('payments') or {}
+        cmd = {'type': 'creditCard', 'name': 'payment', 'cvv': 'yes', 'tz': 'yes', 'payments': 1,
+               'category': f"{p.get('category', 'שמרטפון')} {sub['id']}",
+               'files': []}
+        if key == '1':
+            cmd.update({'sum': monthly, 'paymentsMode': 'kevaMonthly', 'kevaMonths': ''})
+            self.data['pay'] = ['monthly', monthly]
+        else:
+            cmd.update({'sum': annual, 'paymentsMode': 'regular'})
+            self.data['pay'] = ['annual', annual]
+        if p.get('terminal'):
+            cmd['terminal'] = str(p['terminal'])
+        cmd.pop('files')
+        self.save('paying')
+        return [say(t(self.cfg, 'pay_card_intro')), cmd]
+
+    def on_payment(self, status):
+        sub, _, err = self.subscriber(allow_inactive=True)
+        if err:
+            return err
+        plan, amount = self.data.get('pay', ['monthly', 0])
+        confirm = self.p.get('CONFIRM_payment') or None
+        self.save(None)
+        if status != 'OK':
+            store.audit(self.con, 'payment_failed', {'id': sub['id'], 'plan': plan, 'status': status[:40]})
+            return hangup(self.cfg, t(self.cfg, 'pay_failed'))
+        months = 12 if plan == 'annual' else 1
+        new = store.record_payment(self.con, sub['id'], source='phone', months=months, amount=amount,
+                                   confirm=confirm, day=self.day)
+        sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
+        until = say_date(new.isoformat() if new else sub['expires'])
+        return hangup(self.cfg, t(self.cfg, 'pay_ok_' + plan, date=until), t(self.cfg, 'pay_next'))
 
     def on_account_menu(self, key):
         sub, _, err = self.subscriber(allow_inactive=True)
@@ -651,6 +734,8 @@ class Call:
                 return self.account(t(self.cfg, 'disabled'))
             self.data.pop('next', None)
             return self.ask_verify_number(sub, [])
+        if key == '5' and self.payments_on():
+            return self.pay_menu(sub)
         return hangup(self.cfg, t(self.cfg, 'goodbye'))
 
     def on_account_rm(self, key):

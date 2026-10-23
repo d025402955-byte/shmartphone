@@ -238,6 +238,42 @@ def set_voice():
     run('systemctl', 'restart', SERVICE)
 
 
+def set_payments():
+    """Turn on payments by phone (Technoline creditCard -> Nedarim Plus) and the renewal sync."""
+    with open(NEW_CFG, encoding='utf-8') as f:
+        cfg = json.load(f)
+    p = cfg.get('payments') or {}
+    print('prices are in shekels. press Enter to keep the value in [brackets].')
+    p['monthly'] = float(input(f"monthly price [{p.get('monthly', 8.9)}]: ").strip() or p.get('monthly', 8.9))
+    p['annual'] = float(input(f"annual price [{p.get('annual', 82)}]: ").strip() or p.get('annual', 82))
+    p.setdefault('category', '\u05e9\u05de\u05e8\u05d8\u05e4\u05d5\u05df')
+    term = input(f"technoline terminal (usually empty) [{p.get('terminal', '')}]: ").strip()
+    if term:
+        p['terminal'] = term
+    cfg['payments'] = p
+    n = cfg.get('nedarim') or {}
+    mosad = input(f"nedarim plus institution number [{n.get('mosad', '')}]: ").strip() or n.get('mosad', '')
+    key = getpass.getpass('nedarim plus API key npk_... (not shown; Enter = keep): ').strip() or n.get('api_password', '')
+    if mosad and key:
+        cfg['nedarim'] = {'mosad': mosad, 'api_password': key}
+        import nedarim
+        try:
+            rows = nedarim.fetch_history(cfg, '')
+            print('nedarim connection OK,', len(rows), 'transactions read')
+            if rows and len(rows) < nedarim.PAGE:
+                cfg['nedarim']['start_id'] = str(max(int(r.get('TransactionId') or 0) for r in rows))
+                print('renewal sync will start after transaction', cfg['nedarim']['start_id'])
+        except Exception as e:
+            print('nedarim connection FAILED:', repr(e)[:200])
+            if input('save anyway? (y/n): ').strip() != 'y':
+                return
+    else:
+        print('no nedarim key: payments by phone work, monthly renewals will NOT be synced')
+    write_config(cfg, service_user())
+    run('systemctl', 'restart', SERVICE)
+    print('saved; service restarted')
+
+
 def rollback():
     if os.path.exists(DROPIN):
         os.remove(DROPIN)
@@ -250,5 +286,5 @@ if __name__ == '__main__':
     if os.geteuid() != 0:
         sys.exit('run as root')
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'install'
-    {'install': install, 'password': set_password, 'rollback': rollback, 'smtp': set_smtp, 'voice': set_voice,
+    {'install': install, 'password': set_password, 'rollback': rollback, 'smtp': set_smtp, 'voice': set_voice, 'payments': set_payments,
      'status': lambda: print(run('systemctl', 'status', SERVICE, '--no-pager', check=False))}[cmd]()

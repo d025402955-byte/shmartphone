@@ -12,6 +12,7 @@ import admin  # noqa: E402
 import core  # noqa: E402
 import importer  # noqa: E402
 import ivr  # noqa: E402
+import nedarim  # noqa: E402
 import store  # noqa: E402
 
 DAY = datetime.date(2026, 10, 23)
@@ -492,6 +493,100 @@ class VoiceTests(Base):
         files = r[0]['files']
         self.assertNotIn('voice', files[0])  # 'welcome_trial' has {days}
         self.assertEqual(files[-1].get('voice'), 'Charon')  # fixed prompt
+
+
+class PaymentTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.cfg['payments'] = {'monthly': 8.9, 'annual': 82, 'category': 'שמרטפון'}
+        self.p = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'p1', 'PBXcallStatus': 'CALL'}
+
+    def go(self, mode='activate', **k):
+        self.p.update(k)
+        with self.con:
+            return ivr.handle(self.cfg, self.con, dict(self.p), DAY, mode)[0]
+
+    def sub(self):
+        return store.find_by_phone(self.con, '0521234567')
+
+    def test_expired_trial_offered_monthly_keva(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='trial', status='trial',
+                                          expires='2026-10-01')
+        r = self.go()
+        self.assertEqual(r[0]['name'], 'pplan')
+        self.assertIn('הסתיימה', r[0]['files'][0]['text'])
+        r = self.go(pplan='1')
+        cc = r[-1]
+        self.assertEqual((cc['type'], cc['sum'], cc['paymentsMode'], cc['category']),
+                         ('creditCard', 8.9, 'kevaMonthly', f'שמרטפון {sid}'))
+        r = self.go(payment='OK', CONFIRM_payment='555')
+        self.assertEqual(r[-1]['type'], 'hangup')
+        s = self.sub()
+        self.assertEqual((s['status'], s['plan'], s['billing'], s['expires']), ('active', 'monthly', 'nedarim', '2026-11-23'))
+        # Nedarim sync sees the same first charge (same confirmation): no double extension
+        rows = [{'TransactionId': '100', 'Amount': '8.9', 'Confirmation': '555', 'Groupe': f'שמרטפון {sid}',
+                 'KevaId': '777', 'TransactionTime': '23/10/2026 12:00'}]
+        with self.con:
+            nedarim.apply_transactions(self.cfg, self.con, rows, log=lambda *a, **k: None)
+        self.assertEqual((self.sub()['expires'], self.sub()['keva_id']), ('2026-11-23', '777'))
+        # next month's charge matched by KevaId (no category) extends by a month
+        rows = [{'TransactionId': '150', 'Amount': '8.9', 'Confirmation': '600', 'Groupe': '', 'KevaId': '777',
+                 'TransactionTime': '23/11/2026 08:00'}]
+        with self.con:
+            last, n = nedarim.apply_transactions(self.cfg, self.con, rows, log=lambda *a, **k: None)
+        self.assertEqual((last, n, self.sub()['expires']), (150, 1, '2026-12-23'))
+        with self.con:  # same transaction again: ignored
+            self.assertEqual(nedarim.apply_transactions(self.cfg, self.con, rows, log=lambda *a, **k: None)[1], 0)
+
+    def test_annual_and_failure_and_enforcement(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', status='disabled')
+        self.go()
+        r = self.go(pplan='2')
+        self.assertEqual((r[-1]['sum'], r[-1]['paymentsMode']), (82, 'regular'))
+        r = self.go(payment='DECLINE')
+        self.assertEqual(self.sub()['status'], 'disabled')
+        self.p['PBXcallId'] = 'p2'
+        for k in ('pplan', 'payment', 'CONFIRM_payment'):
+            self.p.pop(k, None)
+        self.go()
+        self.go(pplan='2')
+        self.go(payment='OK', CONFIRM_payment='9')
+        s = self.sub()
+        self.assertEqual((s['plan'], s['expires']), ('annual', '2027-10-23'))
+        # paid through the system: blocked only after paid-until + grace
+        later = datetime.date(2027, 10, 27)
+        self.assertTrue(store.authorization(s, later)[0])
+        self.assertFalse(store.authorization(s, later + datetime.timedelta(days=5))[0])
+        # imported (legacy) subscribers are not enforced
+        with self.con:
+            lid = store.create_subscriber(self.con, main_phone='0539999999', expires='2020-01-01', legacy_id='5')
+        self.assertTrue(store.authorization(store.find_by_phone(self.con, '0539999999'), DAY)[0])
+
+    def test_account_menu_offers_payment_and_sync_ignores_others(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567')
+        r = self.go('account')
+        self.assertIn('להצטרפות', ' '.join(f.get('text', '') for f in r[0]['files']))
+        r = self.go('account', acm='5')
+        self.assertEqual(r[0]['name'], 'pplan')
+        rows = [{'TransactionId': '7', 'Amount': '100', 'Confirmation': '1', 'Groupe': 'בניין'},
+                {'TransactionId': '8', 'Amount': '0', 'Confirmation': '2', 'Groupe': f'שמרטפון {sid}'},
+                {'TransactionId': '9', 'Amount': '82', 'Confirmation': '', 'Groupe': f'שמרטפון {sid}'}]
+        with self.con:
+            self.assertEqual(nedarim.apply_transactions(self.cfg, self.con, rows, log=lambda *a, **k: None), (9, 0))
+
+    def test_sync_pages_and_state(self):
+        self.cfg['nedarim'] = {'mosad': '1', 'api_password': 'x', 'start_id': '50'}
+        calls = []
+
+        def fake(cfg, last):
+            calls.append(last)
+            return [] if calls[1:] else [{'TransactionId': '60', 'Amount': '1', 'Confirmation': '1'}]
+        self.assertTrue(nedarim.sync(self.cfg, self.db, fetch=fake, log=lambda *a, **k: None))
+        nedarim.sync(self.cfg, self.db, fetch=fake, log=lambda *a, **k: None)
+        self.assertEqual(calls, ['50', '60'])
 
 
 class EmailTests(Base):

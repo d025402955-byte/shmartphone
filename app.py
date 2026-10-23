@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import admin  # noqa: E402
 import core  # noqa: E402
 import ivr  # noqa: E402
+import nedarim  # noqa: E402
 import store  # noqa: E402
 
 CONFIG_PATH = os.environ.get('SHMARTPHONE_CONFIG', '/etc/shmartphone/app.json')
@@ -172,6 +173,7 @@ def make_handler(cfg):
 
 
 def alert_worker(cfg, wake):
+    last_sync = 0
     while True:
         try:
             while core.process_one(cfg, cfg['db_path']):
@@ -180,6 +182,12 @@ def alert_worker(cfg, wake):
                 pass
         except Exception as e:
             print('WORKER_ERROR', repr(e)[:300], flush=True)
+        if time.time() - last_sync > int(cfg.get('nedarim_sync_seconds', 1200)):
+            last_sync = time.time()
+            try:
+                nedarim.sync(cfg, cfg['db_path'])
+            except Exception as e:
+                print('NEDARIM_SYNC_ERROR', repr(e)[:300], flush=True)
         wake.wait(5)
         wake.clear()
 
