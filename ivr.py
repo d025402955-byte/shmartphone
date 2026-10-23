@@ -98,10 +98,13 @@ TEXTS = {
     'message_thanks': 'ההודעה התקבלה. נחזור אליכם בהקדם. תודה.',
     'goodbye': 'להתראות.',
     'history_none': 'לא נרשמו אירועי רעש ביממה האחרונה.',
-    'history_count': 'ביממה האחרונה נרשמו {n} אירועי רעש. אלה האחרונים:',
-    'history_item': 'אירוע {i}: בשעה {hh}, לפני {ago}, נמשך {sec} שניות.',
-    'history_keys': 'לשמיעת הקלטה של אירוע הקישו את מספרו. לסיום הקישו 0.',
+    'history_intro': 'ביממה האחרונה נרשמו {n} אירועי רעש. מתחילים מהאחרון. '
+                     'בכל רגע: לבא הקישו 3, לקודם 1, לשמיעה חוזרת 2, לזמן ופרטי ההקלטה 5, לסיום 0.',
+    'history_item': 'אירוע {i}, בשעה {hh}, לפני {ago}, {sec} שניות.',
+    'history_peak': 'עוצמה מרבית {peak} מתוך 100.',
     'history_no_file': 'לאירוע הזה אין הקלטה.',
+    'history_end': 'אלה כל אירועי הרעש מהיממה האחרונה. להתראות.',
+    'history_first': 'זה האירוע האחרון שנרשם.',
     'history_pick': 'להיסטוריה של המנוי',
 }
 
@@ -210,7 +213,7 @@ class Call:
             'listening': ('join', self.on_join_result), 'ph_menu': ('phm', self.on_phones_menu),
             'ph_add': ('phn', self.on_phones_add), 'ph_rm': ('phr', self.on_phones_rm),
             'acc_menu': ('acm', self.on_account_menu), 'acc_rm': ('acr', self.on_account_rm),
-            'recording': ('rec', self.on_record), 'his_pick': ('hpick', self.on_history_pick),
+            'recording': ('rec', self.on_record), 'his_nav': ('hnav', self.on_history_nav),
             'his_sub': ('hsub', self.on_history_sub),
         }
         if step in handlers and handlers[step][0] in p:
@@ -490,37 +493,56 @@ class Call:
             return self.history_for(subs[int(key) - 1][0])
         return hangup(self.cfg, t(self.cfg, 'goodbye'))
 
-    def history_for(self, sid, prefix=None, replay=True):
+    def history_for(self, sid):
+        rows = self.con.execute('SELECT * FROM noise_events WHERE subscriber_id=? AND started>? '
+                                'ORDER BY started DESC LIMIT 30', (sid, self.now - 86400)).fetchall()
+        self.data['hsid'] = sid
+        self.data['hev'] = [[r['started'], r['file_id'], int(round(r['noise_sec'] or 0)), r['peak']] for r in rows]
+        self.data['hidx'] = 0
+        intro = t(self.cfg, 'history_intro', n=len(rows))
+        return self.history_play(0, intro)
+
+    def history_details(self, idx):
         import zoneinfo
         tz = zoneinfo.ZoneInfo(self.cfg.get('timezone', 'Asia/Jerusalem'))
-        n = self.con.execute('SELECT COUNT(*) FROM noise_events WHERE subscriber_id=? AND started>?',
-                             (sid, self.now - 86400)).fetchone()[0]
-        rows = self.con.execute('SELECT * FROM noise_events WHERE subscriber_id=? AND started>? '
-                                'ORDER BY started DESC LIMIT 5', (sid, self.now - 86400)).fetchall()
-        self.data['hsid'] = sid
-        self.data['hfiles'] = [r['file_id'] for r in rows]
-        self.save('his_pick')
-        files = [prefix]
-        if replay:
-            files.append(t(self.cfg, 'history_count', n=n))
-            for i, r in enumerate(rows, 1):
-                when = datetime.datetime.fromtimestamp(r['started'], tz)
-                mins = max(0, int((self.now - r['started']) // 60))
-                ago = f'{mins} דקות' if mins < 120 else f'{mins // 60} שעות'
-                files.append(t(self.cfg, 'history_item', i=i, hh=when.strftime('%H:%M'), ago=ago,
-                               sec=int(round(r['noise_sec'] or 0))))
-        files.append(t(self.cfg, 'history_keys'))
-        return [ask('hpick', files, timeout=10)]
+        started, _, sec, peak = self.data['hev'][idx]
+        mins = max(0, int((self.now - started) // 60))
+        ago = f'{mins} דקות' if mins < 120 else f'{mins // 60} שעות'
+        when = datetime.datetime.fromtimestamp(started, tz).strftime('%H:%M')
+        text = t(self.cfg, 'history_item', i=idx + 1, hh=when, ago=ago, sec=sec)
+        if peak:
+            text += ' ' + t(self.cfg, 'history_peak', peak=peak)
+        return text
 
-    def on_history_pick(self, key):
-        fids = self.data.get('hfiles', [])
-        sid = self.data.get('hsid')
-        if key.isdigit() and 1 <= int(key) <= len(fids):
-            fid = fids[int(key) - 1]
-            if not fid:
-                return self.history_for(sid, t(self.cfg, 'history_no_file'), replay=False)
-            return [say({'fileId': fid})] + self.history_for(sid, replay=False)
-        return hangup(self.cfg, t(self.cfg, 'goodbye'))
+    def history_menu(self, files):
+        self.save('his_nav')
+        return [{'type': 'simpleMenu', 'name': 'hnav', 'enabledKeys': '0,1,2,3,5', 'times': 1,
+                 'timeout': int(self.cfg.get('history_gap', 2)), 'errorReturn': 'NEXT',
+                 'files': [f for f in files if f]}]
+
+    def history_play(self, idx, prefix=None):
+        events = self.data.get('hev', [])
+        if idx >= len(events):
+            self.save(None)
+            return hangup(self.cfg, prefix, t(self.cfg, 'history_end'))
+        idx = max(0, idx)
+        self.data['hidx'] = idx
+        fid = events[idx][1]
+        return self.history_menu([{'text': prefix} if prefix else None,
+                                  {'fileId': fid} if fid else {'text': t(self.cfg, 'history_no_file')}])
+
+    def on_history_nav(self, key):
+        idx = self.data.get('hidx', 0)
+        if key == '0':
+            self.save(None)
+            return hangup(self.cfg, t(self.cfg, 'goodbye'))
+        if key == '1':
+            return self.history_play(max(0, idx - 1), t(self.cfg, 'history_first') if idx == 0 else None)
+        if key == '2':
+            return self.history_play(idx)
+        if key == '5':  # time and details of the current recording, then continue
+            return self.history_menu([{'text': self.history_details(idx)}])
+        return self.history_play(idx + 1)  # '3' or no key: next (older)
 
     # ----- 3: info -----
     def info(self):

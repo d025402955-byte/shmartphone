@@ -447,19 +447,34 @@ class HistoryTests(Base):
                                                    'fileError': True, 'startedAt': now - 60}, 'noiseEnd')
         rows = self.con.execute('SELECT event_id,noise_sec,peak,file_id FROM noise_events ORDER BY started').fetchall()
         self.assertEqual([tuple(r) for r in rows], [('ev1', 7.4, 81, 'F1'), ('ev2', 2.0, None, None)])
-        # the verified phone (not a subscriber phone) can hear the history
+        # the verified phone (not a subscriber phone) hears the recordings straight away, newest first
         q = {'PBXphone': '0501112222', 'PBXnum': PBX, 'PBXcallId': 'h1', 'PBXcallStatus': 'CALL'}
-        with self.con:
-            r, _ = ivr.handle(self.cfg, self.con, q, DAY, 'history')
-        spoken = ' '.join(f.get('text', '') for f in r[0]['files'])
-        self.assertIn('נרשמו 2 אירועי רעש', spoken)
-        self.assertIn('נמשך 7 שניות', spoken)
-        with self.con:
-            r, _ = ivr.handle(self.cfg, self.con, {**q, 'hpick': '2'}, DAY, 'history')  # newest first: ev1 is #2
-        self.assertEqual(r[0], {'type': 'simpleMessage', 'files': [{'fileId': 'F1'}]})
-        with self.con:
-            r, _ = ivr.handle(self.cfg, self.con, {**q, 'hpick': '1'}, DAY, 'history')  # ev2 has no file
-        self.assertIn('אין הקלטה', ' '.join(f.get('text', '') for f in r[0]['files']))
+
+        def go(**k):
+            with self.con:
+                return ivr.handle(self.cfg, self.con, {**q, **k}, DAY, 'history')[0]
+        r = go()
+        self.assertEqual(r[0]['type'], 'simpleMenu')
+        texts = ' '.join(f.get('text', '') for f in r[0]['files'])
+        self.assertIn('נרשמו 2 אירועי רעש', texts)
+        self.assertIn('אין הקלטה', texts)  # newest (ev2) has no recording
+        self.assertNotIn('בשעה', texts)  # details only on request
+        r = go(hnav='NEXT')  # no key -> next (older) = ev1
+        self.assertEqual(r[0]['files'], [{'fileId': 'F1'}])
+        r = go(hnav='5')  # details of ev1
+        det = ' '.join(f.get('text', '') for f in r[0]['files'])
+        self.assertIn('בשעה', det)
+        self.assertIn('7 שניות', det)
+        self.assertIn('81', det)
+        r = go(hnav='2')  # replay
+        self.assertIn({'fileId': 'F1'}, r[0]['files'])
+        r = go(hnav='1')  # back to newer
+        self.assertNotIn({'fileId': 'F1'}, r[0]['files'])
+        r = go(hnav='1')  # already the newest
+        self.assertIn('האחרון שנרשם', ' '.join(f.get('text', '') for f in r[0]['files']))
+        r = go(hnav='3')
+        r = go(hnav='3')  # past the end
+        self.assertEqual(r[-1]['type'], 'hangup')
         with self.con:
             r, _ = ivr.handle(self.cfg, self.con, {**q, 'PBXphone': '0599999999', 'PBXcallId': 'h2'}, DAY, 'history')
         self.assertEqual(r[-1]['type'], 'hangup')  # stranger gets nothing
