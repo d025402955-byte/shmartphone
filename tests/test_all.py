@@ -480,6 +480,20 @@ class HistoryTests(Base):
         self.assertEqual(r[-1]['type'], 'hangup')  # stranger gets nothing
 
 
+class VoiceTests(Base):
+    def test_voice_only_on_fixed_prompts(self):
+        self.cfg['voice'] = 'Charon'
+        p = {'PBXphone': '0599999999', 'PBXnum': PBX, 'PBXcallId': 'v1', 'PBXcallStatus': 'CALL'}
+        with self.con:
+            r, _ = ivr.handle(self.cfg, self.con, p, DAY, 'menu')
+        self.assertEqual(r[0]['files'][0].get('voice'), 'Charon')
+        with self.con:  # auto-trial welcome contains a number -> stays on the free voice
+            r, _ = ivr.handle(self.cfg, self.con, {**p, 'PBXcallId': 'v2'}, DAY, 'activate')
+        files = r[0]['files']
+        self.assertNotIn('voice', files[0])  # 'welcome_trial' has {days}
+        self.assertEqual(files[-1].get('voice'), 'Charon')  # fixed prompt
+
+
 class EmailTests(Base):
     def test_message_email_worker(self):
         self.cfg['smtp'] = {'host': 'h', 'user': 'u', 'password': 'p', 'to': 't@x'}

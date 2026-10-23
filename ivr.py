@@ -693,8 +693,26 @@ class Call:
         return hangup(self.cfg, t(self.cfg, 'message_thanks'))
 
 
+def apply_voice(cfg, resp):
+    """Give fixed prompts the configured voice (e.g. a Gemini voice).
+
+    Technoline caches every unique text, so fixed prompts are paid for once. Texts that change
+    per call (times, dates, counts, codes) keep the free default voice so they are not billed
+    on every call.
+    """
+    voice = cfg.get('voice')
+    if not voice:
+        return resp
+    fixed = {t(cfg, k) for k, v in TEXTS.items() if '{' not in v}
+    for cmd in resp:
+        for f in cmd.get('files', []) or []:
+            if isinstance(f, dict) and f.get('text') in fixed:
+                f['voice'] = voice
+    return resp
+
+
 def handle(cfg, con, p, day, mode='activate', now=None):
     """Returns (commands, wake_worker)."""
     c = Call(cfg, con, p, day, now or time.time())
     resp = c.run(mode if mode in MODES else 'activate')
-    return resp, c.wake
+    return apply_voice(cfg, resp), c.wake

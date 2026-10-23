@@ -213,6 +213,31 @@ def set_smtp():
     print('saved; service restarted')
 
 
+GEMINI_VOICES = ['Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir', 'Leda', 'Orus', 'Aoede', 'Callirrhoe', 'Autonoe',
+                 'Enceladus', 'Iapetus', 'Umbriel', 'Algieba', 'Despina', 'Erinome', 'Algenib', 'Rasalgethi',
+                 'Laomedeia', 'Achernar', 'Alnilam', 'Schedar', 'Gacrux', 'Pulcherrima', 'Achird',
+                 'Zubenelgenubi', 'Vindemiatrix', 'Sadachbia', 'Sadaltager', 'Sulafat']
+
+
+def set_voice():
+    """install.py voice NAME  (case does not matter; 'none' = free default voice)"""
+    name = (sys.argv[2] if len(sys.argv) > 2 else '').strip().lower()
+    with open(NEW_CFG, encoding='utf-8') as f:
+        cfg = json.load(f)
+    if name in ('', 'none', 'default'):
+        cfg.pop('voice', None)
+        print('voice: free default')
+    else:
+        match = [v for v in GEMINI_VOICES if v.lower() == name]
+        if not match:
+            print('unknown voice. choose one of:', ' '.join(v.lower() for v in GEMINI_VOICES))
+            return
+        cfg['voice'] = match[0]
+        print('voice:', match[0])
+    write_config(cfg, service_user())
+    run('systemctl', 'restart', SERVICE)
+
+
 def rollback():
     if os.path.exists(DROPIN):
         os.remove(DROPIN)
@@ -225,5 +250,5 @@ if __name__ == '__main__':
     if os.geteuid() != 0:
         sys.exit('run as root')
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'install'
-    {'install': install, 'password': set_password, 'rollback': rollback, 'smtp': set_smtp,
+    {'install': install, 'password': set_password, 'rollback': rollback, 'smtp': set_smtp, 'voice': set_voice,
      'status': lambda: print(run('systemctl', 'status', SERVICE, '--no-pager', check=False))}[cmd]()
