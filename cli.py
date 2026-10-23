@@ -76,6 +76,24 @@ def extensions():
     walk(tree, '')
 
 
+def ext_settings(ext_id):
+    """Show one extension's type and settings (the API URL with its token masked). Read-only."""
+    import urllib.parse
+    import urllib.request
+    with open(CFG, encoding='utf-8') as f:
+        cfg = json.load(f)
+    url = cfg.get('files_url', 'https://api.tlivr.com/ivrFilesApi.php')
+    data = urllib.parse.urlencode({'action': 'folderSettings', 'extensionId': ext_id, 'apiKey': cfg['api_key']}).encode()
+    req = urllib.request.Request(url, data=data, method='POST', headers={'User-Agent': 'curl/8.5.0'})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        info = json.loads(r.read())
+    text = json.dumps(info.get('settings', info), ensure_ascii=True)
+    for tok in (cfg['ivr_token'], cfg['event_token']):
+        text = text.replace(tok, '***')
+    print('ID', ext_id, 'type', info.get('type'), 'key', info.get('extension'))
+    print(text[:1500])
+
+
 def stats():
     con = store.connect(db_path())
     print('subscribers:', dict(con.execute('SELECT status, COUNT(*) FROM subscribers GROUP BY status').fetchall()))
@@ -89,5 +107,8 @@ if __name__ == '__main__':
         do_import(sys.argv[2])
     elif cmd == 'extensions':
         extensions()
+    elif cmd == 'ext':
+        for e in sys.argv[2:]:
+            ext_settings(e)
     else:
         stats()
