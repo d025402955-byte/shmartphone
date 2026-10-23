@@ -268,12 +268,10 @@ def authorization(sub, day, enforce_active_expiry=False):
         if sub['plan'] == 'free' or not exp:
             return True, ''
         billed_here = 'billing' in sub.keys() and sub['billing'] == 'nedarim'
-        if billed_here:  # paid through this system: enforce paid-until + grace
-            limit = (day - datetime.timedelta(days=GRACE_DAYS)).isoformat()
-            return (exp >= limit), 'expired'
-        if not enforce_active_expiry:
-            return True, ''
-        return (exp >= day.isoformat()), 'expired'
+        if not billed_here and not enforce_active_expiry:
+            return True, ''  # imported subscribers, still billed by the old system
+        limit = (day - datetime.timedelta(days=GRACE_DAYS)).isoformat()
+        return (exp >= limit), 'expired'
     return False, 'unknown'
 
 

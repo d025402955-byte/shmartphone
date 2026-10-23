@@ -48,6 +48,7 @@ class StoreTests(Base):
         mk = lambda st, plan, exp: {'status': st, 'plan': plan, 'expires': exp}
         self.assertTrue(store.authorization(mk('active', 'monthly', '2020-01-01'), DAY)[0])
         self.assertFalse(store.authorization(mk('active', 'monthly', '2020-01-01'), DAY, True)[0])
+        self.assertTrue(store.authorization(mk('active', 'monthly', '2026-10-20'), DAY, True)[0])  # grace
         self.assertTrue(store.authorization(mk('trial', 'trial', '2026-10-23'), DAY)[0])
         self.assertFalse(store.authorization(mk('trial', 'trial', '2026-10-22'), DAY)[0])
         self.assertFalse(store.authorization(mk('disabled', 'monthly', None), DAY)[0])
