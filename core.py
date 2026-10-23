@@ -134,6 +134,10 @@ def send_alert(cfg, kind, phone, override_text=None):
     payload = campaign_payload(cfg, kind, phone, override_text)
     if kind == 'verify':
         payload['demo'] = 'no'  # a verification code must always really be delivered
+    if kind == 'disconnected' and cfg.get('alert_extension'):
+        # interactive alert: the answered call goes into the 'alert' extension, which offers to reconnect
+        payload.pop('audioText', None)
+        payload.update({'messagesType': 'extensionActivation', 'extensionActivation': str(cfg['alert_extension'])})
     if kind == 'reconnect':  # call the room phone back into the activate extension
         payload.pop('audioText', None)
         payload.update({'messagesType': 'extensionActivation',

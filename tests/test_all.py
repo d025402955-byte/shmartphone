@@ -657,6 +657,76 @@ class ReconnectTests(Base):
         self.assertIn('פעיל כרגע', r[0]['files'][0]['text'])
 
 
+class AlertReconnectTests(Base):
+    def setup_dropped(self):
+        self.cfg.update({'reconnect_extension': '4321', 'alert_extension': '4322'})
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567')
+            store.add_verified(self.con, sid, '0501112222', 'admin')
+        self.room = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'r1', 'PBXcallStatus': 'CALL'}
+        self.call(self.room)
+        self.call({**self.room, 'apick': '1'})
+        with self.con:
+            core.handle_event(self.cfg, self.con, {'event': 'disconnected', 'time': time.time(), 'callId': 'r1',
+                                                   'roomId': f's{sid}-0521234567', 'num': PBX, 'reason': 'hangup'},
+                              'disconnected')
+            self.con.execute("UPDATE alerts SET state='sent' WHERE kind='disconnected'")
+        self.parent = {'PBXphone': '0501112222', 'PBXnum': PBX, 'PBXcallId': 'A1', 'PBXcallStatus': 'CALL',
+                       'PBXcallType': 'out'}
+        return sid
+
+    def call(self, p, mode='activate', now=None):
+        with self.con:
+            return ivr.handle(self.cfg, self.con, p, DAY, mode, now=now)[0]
+
+    def test_payload_goes_to_alert_extension(self):
+        p = {}
+        self.cfg['alert_extension'] = '4322'
+        c = core.campaign_payload(self.cfg, 'disconnected', '0501112222')
+        self.assertIn('audioText', c)  # payload builder unchanged; send_alert switches the type
+        import urllib.request
+        sent = {}
+
+        class R:
+            def read(self, n): return b'{"status":"OK","errorCode":0}'
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        orig = urllib.request.OpenerDirector.open
+        urllib.request.OpenerDirector.open = lambda s, req, timeout=None: (sent.update(json.loads(req.data)), R())[1]
+        try:
+            core.send_alert(self.cfg, 'disconnected', '0501112222')
+        finally:
+            urllib.request.OpenerDirector.open = orig
+        self.assertEqual((sent['messagesType'], sent['extensionActivation']), ('extensionActivation', '4322'))
+
+    def test_success(self):
+        sid = self.setup_dropped()
+        r = self.call(self.parent, 'alert')
+        self.assertEqual(r[0]['name'], 'alm')
+        r = self.call({**self.parent, 'alm': '1'}, 'alert')
+        self.assertEqual(r[0]['name'], 'rcw')
+        self.assertEqual(self.con.execute("SELECT alert_phone FROM alerts WHERE kind='reconnect'").fetchone()[0],
+                         '0521234567')
+        r = self.call({**self.parent, 'rcw': 'WAIT'}, 'alert')  # still waiting
+        self.assertEqual(r[0]['name'], 'rcw')
+        with self.con:
+            self.con.execute("UPDATE alerts SET state='sent' WHERE kind='reconnect'")
+        r = self.call({**self.room, 'PBXcallId': 'r2', 'PBXcallType': 'out'})  # room auto-answers
+        self.assertEqual(r[-1]['type'], 'noiseMonitor')
+        r = self.call({**self.parent, 'rcw': 'WAIT'}, 'alert')
+        self.assertIn('חודש בהצלחה', r[0]['files'][0]['text'])
+        r = self.call({**self.parent, 'rcd': '2'}, 'alert')
+        self.assertEqual(r[-1], {'type': 'noiseMonitorJoin', 'name': 'join', 'roomId': f's{sid}-0521234567'})
+
+    def test_failure_after_timeout(self):
+        self.setup_dropped()
+        self.call(self.parent, 'alert')
+        self.call({**self.parent, 'alm': '1'}, 'alert')
+        r = self.call({**self.parent, 'rcw': 'WAIT'}, 'alert', now=time.time() + 200)
+        self.assertEqual(r[-1]['type'], 'hangup')
+        self.assertIn('לא הצלחנו', r[0]['files'][0]['text'])
+
+
 class EmailTests(Base):
     def test_message_email_worker(self):
         self.cfg['smtp'] = {'host': 'h', 'user': 'u', 'password': 'p', 'to': 't@x'}

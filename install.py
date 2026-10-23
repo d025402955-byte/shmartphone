@@ -283,19 +283,20 @@ def set_payments():
 
 
 def set_reconnect():
-    """install.py reconnect EXTENSION_ID  - Technoline ID of the activate (key 1) API extension; 0 = off"""
-    ext = (sys.argv[2] if len(sys.argv) > 2 else '').strip()
+    """install.py reconnect ACTIVATE_EXT_ID ALERT_EXT_ID  (Technoline extension IDs; 0 0 = off)"""
+    args = [a.strip() for a in sys.argv[2:4]]
     with open(NEW_CFG, encoding='utf-8') as f:
         cfg = json.load(f)
-    if not ext.isdigit():
-        print('usage: install.py reconnect EXTENSION_ID   (0 = off)')
+    if len(args) != 2 or not all(a.isdigit() for a in args):
+        print('usage: install.py reconnect ACTIVATE_EXTENSION_ID ALERT_EXTENSION_ID   (0 0 = off)')
         return
-    if ext == '0':
-        cfg.pop('reconnect_extension', None)
-        print('reconnect: off')
-    else:
-        cfg['reconnect_extension'] = ext
-        print('reconnect: room phone will be called into extension', ext)
+    for key, val in zip(('reconnect_extension', 'alert_extension'), args):
+        if val == '0':
+            cfg.pop(key, None)
+        else:
+            cfg[key] = val
+    print('room call-back into extension:', cfg.get('reconnect_extension', 'off'),
+          '| interactive disconnect alert via extension:', cfg.get('alert_extension', 'off'))
     write_config(cfg, service_user())
     run('systemctl', 'restart', SERVICE)
 

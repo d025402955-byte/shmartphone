@@ -10,6 +10,8 @@ Each menu option is its own Technoline API extension pointing to /ivr/<token>/<m
   account   6  account status, alert numbers, phones
   message   9  record a message for customer service (emailed)
   history      noise history: recent noise events, with their recordings
+  alert        (outbound) the 'room line disconnected' alert call: offers to call the room back
+               and tells the parent whether monitoring resumed
   reconnect    after the room call dropped: call the room phone back (it must auto-answer) and resume
   pay          join / renew a paid subscription (card by phone through Technoline -> Nedarim Plus)
 
@@ -23,7 +25,7 @@ import time
 
 import store
 
-MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history', 'pay', 'reconnect')
+MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history', 'pay', 'reconnect', 'alert')
 MENU_KEYS = {'1': 'activate', '2': 'listen', '3': 'info', '4': 'phones', '5': 'verify', '6': 'account',
              '9': 'message'}
 HEB_MONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר',
@@ -107,6 +109,12 @@ TEXTS = {
     'pay_ok_monthly': 'תודה. המנוי החודשי הופעל, והוא בתוקף עד {date}. החיוב יתחדש מדי חודש.',
     'pay_ok_annual': 'תודה. המנוי השנתי הופעל, והוא בתוקף עד {date}.',
     'pay_next': 'להפעלת השמרטפון התקשרו שוב ובחרו 1. להתראות.',
+    'al_disconnected': 'שלום, כאן שמרטפון. הקו בחדר התינוק התנתק.',
+    'al_keys': 'לחיוג לטלפון שבחדר וחידוש הניטור הקישו 1. לסיום הקישו 0.',
+    'rc_dialing': 'מתקשרים לטלפון שבחדר. נא להמתין על הקו.',
+    'rc_still': 'עדיין מנסים להתחבר.',
+    'rc_ok': 'הניטור חודש בהצלחה. להאזנה לחדר הקישו 2. לסיום הקישו 0.',
+    'rc_failed': 'לא הצלחנו להתחבר לטלפון שבחדר. כדאי לבדוק את הטלפון. להתראות.',
     'rc_one': 'הניטור בחדר התנתק בשעה {hh}.',
     'rc_keys': 'לחיוג לטלפון שבחדר והפעלת הניטור מחדש הקישו 1. לסיום הקישו 0.',
     'rc_many': 'הניטור התנתק בכמה חדרים.',
@@ -240,6 +248,8 @@ class Call:
             'recording': ('rec', self.on_record), 'his_nav': ('hnav', self.on_history_nav),
             'his_sub': ('hsub', self.on_history_sub), 'pay_plan': ('pplan', self.on_pay_plan),
             'paying': ('payment', self.on_payment), 'rc_pick': ('rcon', self.on_reconnect),
+            'al_menu': ('alm', self.on_alert_menu), 'rc_wait': ('rcw', self.on_reconnect_wait),
+            'rc_done': ('rcd', self.on_reconnect_done),
         }
         if step in handlers and handlers[step][0] in p:
             return handlers[step][1](p[handlers[step][0]])
@@ -251,7 +261,8 @@ class Call:
         return {'menu': self.menu, 'activate': self.activate, 'listen': self.listen, 'info': self.info,
                 'phones': self.phones, 'verify': self.verify, 'account': self.account,
                 'message': self.message, 'history': self.history,
-                'pay': self.pay_menu, 'reconnect': self.reconnect}.get(mode, self.activate)()
+                'pay': self.pay_menu, 'reconnect': self.reconnect,
+                'alert': self.disconnect_alert}.get(mode, self.activate)()
 
     def on_hangup(self):
         if self.sess:
@@ -556,6 +567,74 @@ class Call:
             return hangup(self.cfg, t(self.cfg, 'rc_too_many' if why == 'too_many' else 'error'))
         self.wake = True
         return hangup(self.cfg, t(self.cfg, 'rc_calling'))
+
+    # ----- the 'room disconnected' alert call (outbound to the parent) -----
+    def disconnect_alert(self):
+        row = self.con.execute("SELECT * FROM alerts WHERE kind='disconnected' AND alert_phone=? "
+                               "AND state IN ('sent','sending','unknown','demo') AND created>? ORDER BY id DESC LIMIT 1",
+                               (self.phone, self.now - 1800)).fetchone()
+        prev = row and self.con.execute('SELECT * FROM sessions WHERE call_id=?', (row['call_id'],)).fetchone()
+        if not row or not prev:
+            return hangup(self.cfg, t(self.cfg, 'al_disconnected'))
+        self.data['al'] = [row['subscriber_id'], prev['call_id'], prev['phone']]
+        self.bind_id(row['subscriber_id'])
+        return self.alert_menu()
+
+    def bind_id(self, sid):
+        self.save(self.sess['step'] if self.sess else None, subscriber_id=sid)
+
+    def alert_menu(self, prefix=None):
+        self.save('al_menu')
+        return [{'type': 'simpleMenu', 'name': 'alm', 'enabledKeys': '0,1', 'times': 2, 'timeout': 8,
+                 'errorReturn': 'ERROR',
+                 'files': [{'text': x} for x in (prefix, t(self.cfg, 'al_disconnected'), t(self.cfg, 'al_keys')) if x]}]
+
+    def on_alert_menu(self, key):
+        if key != '1':
+            return hangup(self.cfg, t(self.cfg, 'goodbye'))
+        sid, prev_call, room_phone = self.data.get('al', [None, None, None])
+        sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sid,)).fetchone()
+        if not sub or not store.authorization(sub, self.day, self.cfg.get('enforce_active_expiry', False))[0]:
+            return hangup(self.cfg, t(self.cfg, 'disabled'))
+        import core
+        ok, why = core.queue_reconnect(self.cfg, self.con, sid, room_phone, prev_call, self.phone, self.now)
+        if not ok:
+            return hangup(self.cfg, t(self.cfg, 'rc_too_many' if why == 'too_many' else 'error'))
+        self.wake = True
+        self.data['rc_since'] = self.now
+        return self.wait_prompt(t(self.cfg, 'rc_dialing'))
+
+    def wait_prompt(self, text=None):
+        self.save('rc_wait')
+        return [{'type': 'simpleMenu', 'name': 'rcw', 'enabledKeys': '0', 'times': 1,
+                 'timeout': int(self.cfg.get('reconnect_poll_seconds', 6)), 'errorReturn': 'WAIT',
+                 'files': [{'text': text or t(self.cfg, 'rc_still')}]}]
+
+    def on_reconnect_wait(self, key):
+        if key == '0':
+            return hangup(self.cfg, t(self.cfg, 'goodbye'))
+        sid, _, room_phone = self.data.get('al', [None, None, None])
+        since = self.data.get('rc_since', self.now)
+        live = self.con.execute("SELECT room_id FROM sessions WHERE subscriber_id=? AND phone=? AND status='monitoring' "
+                                "AND ended IS NULL AND started>=? ORDER BY started DESC LIMIT 1",
+                                (sid, room_phone, since - 1)).fetchone()
+        if live:
+            self.data['room'] = live['room_id']
+            self.save('rc_done')
+            return [{'type': 'simpleMenu', 'name': 'rcd', 'enabledKeys': '0,2', 'times': 1, 'timeout': 7,
+                     'errorReturn': 'ERROR', 'files': [{'text': t(self.cfg, 'rc_ok')}]}]
+        failed = self.con.execute("SELECT 1 FROM alerts WHERE kind='reconnect' AND subscriber_id=? AND created>=? "
+                                  "AND state='failed'", (sid, since - 1)).fetchone()
+        if failed or self.now - since > float(self.cfg.get('reconnect_wait_seconds', 100)):
+            self.save(None)
+            return hangup(self.cfg, t(self.cfg, 'rc_failed'))
+        return self.wait_prompt()
+
+    def on_reconnect_done(self, key):
+        if key == '2' and self.data.get('room'):
+            sid = self.data.get('al', [None])[0]
+            return self.join('', self.data['room'], sid)
+        return hangup(self.cfg, t(self.cfg, 'goodbye'))
 
     def resume_outbound(self):
         """The room phone answered our reconnect call: resume monitoring without any prompts."""
