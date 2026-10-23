@@ -253,7 +253,11 @@ def set_payments():
     cfg['payments'] = p
     n = cfg.get('nedarim') or {}
     mosad = input(f"nedarim plus institution number [{n.get('mosad', '')}]: ").strip() or n.get('mosad', '')
-    key = getpass.getpass('nedarim plus API key npk_... (not shown; Enter = keep): ').strip() or n.get('api_password', '')
+    key = getpass.getpass('nedarim plus API key npk_... (not shown; Enter = keep): ')
+    key = ''.join(ch for ch in key if ch.isprintable() and not ch.isspace()).strip('"\'') or n.get('api_password', '')
+    if key:
+        print(f"key check: length {len(key)}, starts with npk_: {key.startswith('npk_')}, "
+              f"only letters/digits/_-: {all(c.isalnum() or c in '_-' for c in key)}")
     if mosad and key:
         cfg['nedarim'] = {'mosad': mosad, 'api_password': key}
         import nedarim
