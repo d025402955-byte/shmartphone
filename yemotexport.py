@@ -19,7 +19,7 @@ OUT = '/var/lib/shmartphone/yemot'
 KEEP = ('.wav', '.mp3', '.ini', '.tts', '.txt', '.ogg')
 MAX_FILES = 20000
 # customer room recordings and the recycle bin are not system recordings: never copied
-SKIP_DIRS = ('confbridgeBaby', 'Trash', 'ConfBridge', 'ApiRecord', 'Record')
+SKIP_DIRS = ('confbridgeBaby', 'Trash', 'ConfBridge', 'ApiRecord', 'Record', 'monitorRec')
 
 
 def call(token, cmd, **params):
