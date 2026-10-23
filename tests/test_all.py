@@ -590,6 +590,73 @@ class PaymentTests(Base):
         self.assertEqual(calls, ['50', '60'])
 
 
+class ReconnectTests(Base):
+    def test_parent_requests_reconnect_and_room_auto_resumes(self):
+        self.cfg['reconnect_extension'] = '4321'
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567')
+            store.add_verified(self.con, sid, '0501112222', 'admin')
+        room = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'r1', 'PBXcallStatus': 'CALL'}
+
+        def call(p, mode='activate'):
+            with self.con:
+                return ivr.handle(self.cfg, self.con, p, DAY, mode)[0]
+        call(room)
+        call({**room, 'apick': '1'})
+        with self.con:  # the provider cuts the room call
+            core.handle_event(self.cfg, self.con, {'event': 'disconnected', 'time': time.time(), 'callId': 'r1',
+                                                   'roomId': f's{sid}-0521234567', 'num': PBX, 'reason': 'hangup'},
+                              'disconnected')
+        self.assertIsNone(self.con.execute("SELECT 1 FROM alerts WHERE kind='reconnect'").fetchone())  # not automatic
+        parent = {'PBXphone': '0501112222', 'PBXnum': PBX, 'PBXcallId': 'L1', 'PBXcallStatus': 'CALL'}
+        r = call(parent, 'listen')  # nothing to listen to -> reconnect is offered
+        self.assertEqual(r[0]['name'], 'rcon')
+        with self.con:
+            r, woke = ivr.handle(self.cfg, self.con, {**parent, 'rcon': '1'}, DAY, 'listen')
+        self.assertTrue(woke)
+        al = self.con.execute("SELECT * FROM alerts WHERE kind='reconnect'").fetchone()
+        self.assertEqual((al['alert_phone'], al['call_id']), ('0521234567', 'r1'))
+        sent = {}
+
+        class Resp:
+            def __init__(self, body):
+                self.body = body
+            def read(self, n):
+                return self.body
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def fake_open(self, req, timeout=None):
+            sent.update(json.loads(req.data))
+            return Resp(b'{"status":"OK","errorCode":0,"campaignId":"5"}')
+        import urllib.request
+        orig = urllib.request.OpenerDirector.open
+        urllib.request.OpenerDirector.open = fake_open
+        try:
+            self.assertEqual(core.send_alert(self.cfg, 'reconnect', '0521234567')[0], 'sent')
+        finally:
+            urllib.request.OpenerDirector.open = orig
+        self.assertEqual((sent['messagesType'], sent['extensionActivation'], sent['phones']),
+                         ('extensionActivation', '4321', ['0521234567']))
+        self.assertNotIn('audioText', sent)
+        with self.con:
+            self.con.execute("UPDATE alerts SET state='sent' WHERE id=?", (al['id'],))
+        # the room phone answers the outbound call: monitoring resumes with no prompts
+        r = call({**room, 'PBXcallId': 'r2', 'PBXcallType': 'out'})
+        self.assertEqual(r[-1]['type'], 'noiseMonitor')
+        self.assertEqual(r[-1]['roomId'], f's{sid}-0521234567')
+        s2 = self.con.execute("SELECT * FROM sessions WHERE call_id='r2'").fetchone()
+        self.assertEqual((s2['alert_phone'], s2['subscriber_id']), ('0501112222', sid))
+        # an unexpected outbound call is just hung up
+        self.assertEqual(call({**room, 'PBXcallId': 'r3', 'PBXcallType': 'out'}), [{'type': 'hangup'}])
+        # stranger gets nothing; dedicated extension says it is active now
+        self.assertEqual(call({**parent, 'PBXphone': '0599999999', 'PBXcallId': 'x'}, 'reconnect')[-1]['type'], 'hangup')
+        r = call({**parent, 'PBXcallId': 'L2'}, 'reconnect')
+        self.assertIn('פעיל כרגע', r[0]['files'][0]['text'])
+
+
 class EmailTests(Base):
     def test_message_email_worker(self):
         self.cfg['smtp'] = {'host': 'h', 'user': 'u', 'password': 'p', 'to': 't@x'}

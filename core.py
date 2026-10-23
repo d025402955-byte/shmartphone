@@ -9,6 +9,7 @@ import store
 DEFAULT_TEXTS = {
     'alert_noise': 'שמרטפון. זוהה רעש בחדר התינוק.',
     'alert_disconnected': 'שמרטפון. הקו בחדר התינוק התנתק.',
+    'alert_reconnect': '',  # not spoken: the answered call goes into the monitoring extension
 }
 
 
@@ -64,6 +65,7 @@ def handle_event(cfg, con, ev, header_event, now=None):
         con.execute("UPDATE sessions SET status='monitoring' WHERE call_id=?", (call_id,))
     if kind in ('noise', 'noiseEnd') and ev.get('eventId'):
         record_noise(con, sess, ev, now)
+    delay = None
     if kind == 'disconnected':
         con.execute('UPDATE sessions SET ended=COALESCE(ended,?), status=? WHERE call_id=?',
                     (now, 'disconnected ' + str(ev.get('reason', '')), call_id))
@@ -80,11 +82,30 @@ def handle_event(cfg, con, ev, header_event, now=None):
         "AND state IN ('pending','sending','sent','demo','unknown')",
         (sess['subscriber_id'], kind, now - cooldown)).fetchone()
     state = 'skipped' if recent else 'pending'
-    con.execute('INSERT INTO alerts(unique_key,subscriber_id,call_id,kind,alert_phone,created,state,result) '
-                'VALUES(?,?,?,?,?,?,?,?)',
+    con.execute('INSERT INTO alerts(unique_key,subscriber_id,call_id,kind,alert_phone,created,state,result,not_before) '
+                'VALUES(?,?,?,?,?,?,?,?,?)',
                 (key, sess['subscriber_id'], call_id, kind, sess['alert_phone'], now, state,
-                 json.dumps({'note': 'cooldown'}) if recent else None))
+                 json.dumps({'note': 'cooldown'}) if recent else None, delay))
     return 200, 'queued' if state == 'pending' else 'cooldown'
+
+
+def queue_reconnect(cfg, con, sub_id, room_phone, prev_call_id, requested_by, now=None):
+    """Ask Technoline to call the room phone into the monitoring extension (it must auto-answer).
+
+    Returns (ok, reason)."""
+    now = now or time.time()
+    if not cfg.get('reconnect_extension'):
+        return False, 'not_configured'
+    recent = con.execute("SELECT COUNT(*) FROM alerts WHERE subscriber_id=? AND kind='reconnect' AND created>?",
+                         (sub_id, now - 7200)).fetchone()[0]
+    if recent >= int(cfg.get('reconnect_max_per_2h', 4)):
+        return False, 'too_many'
+    con.execute('INSERT INTO alerts(unique_key,subscriber_id,call_id,kind,alert_phone,created,state,payload) '
+                'VALUES(?,?,?,?,?,?,?,?)',
+                (f'reconnect:{prev_call_id}:{int(now)}', sub_id, prev_call_id, 'reconnect', room_phone, now, 'pending',
+                 json.dumps({'by': requested_by})))
+    store.audit(con, 'reconnect', {'id': sub_id, 'room_phone': room_phone, 'by': requested_by})
+    return True, ''
 
 
 # ---------- alert calls ----------
@@ -92,7 +113,7 @@ def handle_event(cfg, con, ev, header_event, now=None):
 def campaign_payload(cfg, kind, phone, override_text=None):
     payload = {
         'action': 'campaignRun', 'apiKey': cfg['api_key'], 'phones': [phone],
-        'audioText': override_text or text(cfg, 'alert_' + kind), 'title': 'shmartphone ' + kind,
+        'audioText': override_text or text(cfg, 'alert_' + kind) or None, 'title': 'shmartphone ' + kind,
         'callLength': int(cfg.get('call_length', 25)), 'betweenRetries': 5,
         'dialRetries': int(cfg.get('dial_retries', 1)), 'maxRing': 1, 'reasonableHours': 'no',
         'demo': 'yes' if cfg.get('demo') else 'no',
@@ -113,6 +134,11 @@ def send_alert(cfg, kind, phone, override_text=None):
     payload = campaign_payload(cfg, kind, phone, override_text)
     if kind == 'verify':
         payload['demo'] = 'no'  # a verification code must always really be delivered
+    if kind == 'reconnect':  # call the room phone back into the activate extension
+        payload.pop('audioText', None)
+        payload.update({'messagesType': 'extensionActivation',
+                        'extensionActivation': str(cfg['reconnect_extension']),
+                        'callLength': int(cfg.get('reconnect_ring_seconds', 30))})
     req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                                  headers={'Content-Type': 'application/json',
                                           'User-Agent': 'curl/8.5.0'}, method='POST')
@@ -129,7 +155,8 @@ def process_one(cfg, db_path, sender=send_alert, log=print):
     con = store.connect(db_path)
     try:
         con.execute('BEGIN IMMEDIATE')
-        row = con.execute("SELECT * FROM alerts WHERE state='pending' ORDER BY id LIMIT 1").fetchone()
+        row = con.execute("SELECT * FROM alerts WHERE state='pending' AND (not_before IS NULL OR not_before<=?) "
+                          "ORDER BY id LIMIT 1", (time.time(),)).fetchone()
         if not row:
             con.rollback()
             return False
@@ -142,7 +169,7 @@ def process_one(cfg, db_path, sender=send_alert, log=print):
     else:
         payload = json.loads(row['payload']) if row['payload'] else {}
         try:
-            if payload.get('text'):
+            if payload.get('text') and row['kind'] != 'reconnect':
                 state, result = sender(cfg, row['kind'], row['alert_phone'], payload['text'])
             else:
                 state, result = sender(cfg, row['kind'], row['alert_phone'])

@@ -121,7 +121,7 @@ CREATE INDEX IF NOT EXISTS messages_state ON messages(state);
 
 MIGRATIONS = {
     'sessions': [('step', 'TEXT'), ('mode', 'TEXT'), ('data', 'TEXT')],
-    'alerts': [('payload', 'TEXT')],
+    'alerts': [('payload', 'TEXT'), ('not_before', 'REAL')],
     'subscribers': [('billing', 'TEXT'), ('keva_id', 'TEXT')],
 }
 

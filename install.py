@@ -282,6 +282,24 @@ def set_payments():
     print('saved; service restarted')
 
 
+def set_reconnect():
+    """install.py reconnect EXTENSION_ID  - Technoline ID of the activate (key 1) API extension; 0 = off"""
+    ext = (sys.argv[2] if len(sys.argv) > 2 else '').strip()
+    with open(NEW_CFG, encoding='utf-8') as f:
+        cfg = json.load(f)
+    if not ext.isdigit():
+        print('usage: install.py reconnect EXTENSION_ID   (0 = off)')
+        return
+    if ext == '0':
+        cfg.pop('reconnect_extension', None)
+        print('reconnect: off')
+    else:
+        cfg['reconnect_extension'] = ext
+        print('reconnect: room phone will be called into extension', ext)
+    write_config(cfg, service_user())
+    run('systemctl', 'restart', SERVICE)
+
+
 def rollback():
     if os.path.exists(DROPIN):
         os.remove(DROPIN)
@@ -294,5 +312,5 @@ if __name__ == '__main__':
     if os.geteuid() != 0:
         sys.exit('run as root')
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'install'
-    {'install': install, 'password': set_password, 'rollback': rollback, 'smtp': set_smtp, 'voice': set_voice, 'payments': set_payments,
+    {'install': install, 'password': set_password, 'rollback': rollback, 'smtp': set_smtp, 'voice': set_voice, 'payments': set_payments, 'reconnect': set_reconnect,
      'status': lambda: print(run('systemctl', 'status', SERVICE, '--no-pager', check=False))}[cmd]()

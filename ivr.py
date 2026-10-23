@@ -10,6 +10,7 @@ Each menu option is its own Technoline API extension pointing to /ivr/<token>/<m
   account   6  account status, alert numbers, phones
   message   9  record a message for customer service (emailed)
   history      noise history: recent noise events, with their recordings
+  reconnect    after the room call dropped: call the room phone back (it must auto-answer) and resume
   pay          join / renew a paid subscription (card by phone through Technoline -> Nedarim Plus)
 
 Per-call state is kept in the sessions table (step + data), so stale request
@@ -22,7 +23,7 @@ import time
 
 import store
 
-MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history', 'pay')
+MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history', 'pay', 'reconnect')
 MENU_KEYS = {'1': 'activate', '2': 'listen', '3': 'info', '4': 'phones', '5': 'verify', '6': 'account',
              '9': 'message'}
 HEB_MONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר',
@@ -106,6 +107,14 @@ TEXTS = {
     'pay_ok_monthly': 'תודה. המנוי החודשי הופעל, והוא בתוקף עד {date}. החיוב יתחדש מדי חודש.',
     'pay_ok_annual': 'תודה. המנוי השנתי הופעל, והוא בתוקף עד {date}.',
     'pay_next': 'להפעלת השמרטפון התקשרו שוב ובחרו 1. להתראות.',
+    'rc_one': 'הניטור בחדר התנתק בשעה {hh}.',
+    'rc_keys': 'לחיוג לטלפון שבחדר והפעלת הניטור מחדש הקישו 1. לסיום הקישו 0.',
+    'rc_many': 'הניטור התנתק בכמה חדרים.',
+    'rc_room': 'לחיוג חוזר לטלפון',
+    'rc_calling': 'מתקשרים עכשיו לטלפון שבחדר. כשהוא יענה, הניטור יתחדש. להתראות.',
+    'rc_none': 'לא נמצא ניטור שהתנתק ב-12 השעות האחרונות.',
+    'rc_active': 'הניטור בחדר פעיל כרגע. להאזנה בחרו בשלוחת השמרטף.',
+    'rc_too_many': 'כבר חייגנו כמה פעמים לטלפון שבחדר בשעתיים האחרונות. נסו שוב מאוחר יותר.',
     'history_none': 'לא נרשמו אירועי רעש ביממה האחרונה.',
     'history_intro': 'ביממה האחרונה נרשמו {n} אירועי רעש. מתחילים מהאחרון. '
                      'בכל רגע: לבא הקישו 3, לקודם 1, לשמיעה חוזרת 2, לזמן ופרטי ההקלטה 5, לסיום 0.',
@@ -230,7 +239,7 @@ class Call:
             'acc_menu': ('acm', self.on_account_menu), 'acc_rm': ('acr', self.on_account_rm),
             'recording': ('rec', self.on_record), 'his_nav': ('hnav', self.on_history_nav),
             'his_sub': ('hsub', self.on_history_sub), 'pay_plan': ('pplan', self.on_pay_plan),
-            'paying': ('payment', self.on_payment),
+            'paying': ('payment', self.on_payment), 'rc_pick': ('rcon', self.on_reconnect),
         }
         if step in handlers and handlers[step][0] in p:
             return handlers[step][1](p[handlers[step][0]])
@@ -242,7 +251,7 @@ class Call:
         return {'menu': self.menu, 'activate': self.activate, 'listen': self.listen, 'info': self.info,
                 'phones': self.phones, 'verify': self.verify, 'account': self.account,
                 'message': self.message, 'history': self.history,
-                'pay': self.pay_menu}.get(mode, self.activate)()
+                'pay': self.pay_menu, 'reconnect': self.reconnect}.get(mode, self.activate)()
 
     def on_hangup(self):
         if self.sess:
@@ -273,6 +282,8 @@ class Call:
         return phones[:8]
 
     def activate(self, intro_override=None):
+        if self.p.get('PBXcallType') == 'out':
+            return self.resume_outbound()
         sub, intro, err = self.subscriber(auto_trial=True)
         if err:
             return err
@@ -442,7 +453,8 @@ class Call:
             if r:
                 rooms.append((sub['main_phone'], r['room_id'], sid))
         if not rooms:
-            return hangup(self.cfg, t(self.cfg, 'listen_none'))
+            offer = self.reconnect_offer(subs)
+            return offer or hangup(self.cfg, t(self.cfg, 'listen_none'))
         if len(rooms) == 1:
             return self.join(*rooms[0])
         self.data['rooms'] = rooms[:8]
@@ -472,6 +484,94 @@ class Call:
         if status == 'LEFT':
             return [{'type': 'hangup'}]
         return hangup(self.cfg, t(self.cfg, msgs.get(status, 'error')))
+
+    # ----- reconnect the room phone (requested from the parent's phone) -----
+    def caller_subs(self):
+        subs = set()
+        own = store.find_by_phone(self.con, self.phone)
+        if own:
+            subs.add(own['id'])
+        for r in self.con.execute('SELECT subscriber_id FROM alert_phones WHERE phone=?', (self.phone,)):
+            subs.add(r[0])
+        return subs
+
+    def ended_rooms(self, subs):
+        out = []
+        for sid in subs:
+            sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sid,)).fetchone()
+            if not sub or not store.authorization(sub, self.day, self.cfg.get('enforce_active_expiry', False))[0]:
+                continue
+            live = self.con.execute("SELECT 1 FROM sessions WHERE subscriber_id=? AND status='monitoring' "
+                                    "AND ended IS NULL AND started>?", (sid, self.now - 12 * 3600)).fetchone()
+            if live:
+                continue
+            r = self.con.execute("SELECT * FROM sessions WHERE subscriber_id=? AND room_id IS NOT NULL "
+                                 "AND ended IS NOT NULL AND ended>? AND phone!=? ORDER BY ended DESC LIMIT 1",
+                                 (sid, self.now - 12 * 3600, self.phone)).fetchone()
+            if r:
+                out.append([sid, r['call_id'], r['phone'], r['ended']])
+        return out[:8]
+
+    def reconnect_offer(self, subs, prefix=None):
+        if not self.cfg.get('reconnect_extension'):
+            return None
+        rooms = self.ended_rooms(subs)
+        if not rooms:
+            return None
+        import zoneinfo
+        tz = zoneinfo.ZoneInfo(self.cfg.get('timezone', 'Asia/Jerusalem'))
+        self.data['rc'] = rooms
+        self.save('rc_pick')
+        files = [prefix]
+        if len(rooms) == 1:
+            hh = datetime.datetime.fromtimestamp(rooms[0][3], tz).strftime('%H:%M')
+            files += [t(self.cfg, 'rc_one', hh=hh), t(self.cfg, 'rc_keys')]
+        else:
+            files.append(t(self.cfg, 'rc_many'))
+            for i, r in enumerate(rooms, 1):
+                files += [t(self.cfg, 'rc_room'), {'digits': r[2]}, t(self.cfg, 'pick_press'), {'number': str(i)}]
+        return [ask('rcon', files, timeout=8)]
+
+    def reconnect(self):
+        subs = self.caller_subs()
+        if not subs:
+            return hangup(self.cfg, t(self.cfg, 'not_registered'))
+        offer = self.reconnect_offer(subs)
+        if offer:
+            return offer
+        live = any(self.con.execute("SELECT 1 FROM sessions WHERE subscriber_id=? AND status='monitoring' "
+                                    "AND ended IS NULL AND started>?", (sid, self.now - 12 * 3600)).fetchone()
+                   for sid in subs)
+        return hangup(self.cfg, t(self.cfg, 'rc_active' if live else 'rc_none'))
+
+    def on_reconnect(self, key):
+        rooms = self.data.get('rc', [])
+        if not (key.isdigit() and 1 <= int(key) <= len(rooms)):
+            return hangup(self.cfg, t(self.cfg, 'goodbye'))
+        sid, prev_call, room_phone, _ = rooms[int(key) - 1]
+        import core
+        ok, why = core.queue_reconnect(self.cfg, self.con, sid, room_phone, prev_call, self.phone, self.now)
+        self.save(None)
+        if not ok:
+            return hangup(self.cfg, t(self.cfg, 'rc_too_many' if why == 'too_many' else 'error'))
+        self.wake = True
+        return hangup(self.cfg, t(self.cfg, 'rc_calling'))
+
+    def resume_outbound(self):
+        """The room phone answered our reconnect call: resume monitoring without any prompts."""
+        row = self.con.execute("SELECT * FROM alerts WHERE kind='reconnect' AND alert_phone=? "
+                               "AND state IN ('sent','demo','unknown','sending') AND created>? ORDER BY id DESC LIMIT 1",
+                               (self.phone, self.now - 900)).fetchone()
+        if not row:
+            return [{'type': 'hangup'}]
+        sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (row['subscriber_id'],)).fetchone()
+        prev = self.con.execute('SELECT * FROM sessions WHERE call_id=?', (row['call_id'],)).fetchone()
+        if not sub or not prev or not prev['alert_phone'] or \
+                not store.authorization(sub, self.day, self.cfg.get('enforce_active_expiry', False))[0]:
+            return [{'type': 'hangup'}]
+        self.con.execute("UPDATE alerts SET state='answered' WHERE id=?", (row['id'],))
+        self.bind(sub)
+        return self.start_monitor(sub, prev['alert_phone'])
 
     # ----- noise history -----
     def allowed_subs(self):
