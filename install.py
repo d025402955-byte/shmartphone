@@ -262,7 +262,11 @@ def set_payments():
         cfg['nedarim'] = {'mosad': mosad, 'api_password': key}
         import nedarim
         try:
-            rows = nedarim.fetch_history(cfg, '')
+            dbg = {}
+            try:
+                rows = nedarim.fetch_history(cfg, '', dbg)
+            finally:
+                print('nedarim url used:', dbg.get('url', nedarim.URL))
             print('nedarim connection OK,', len(rows), 'transactions read')
             if rows and len(rows) < nedarim.PAGE:
                 cfg['nedarim']['start_id'] = str(max(int(r.get('TransactionId') or 0) for r in rows))

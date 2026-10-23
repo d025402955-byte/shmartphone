@@ -14,6 +14,7 @@ Limits: GetHistoryJson allows 20 requests/hour per institution + IP. We use at m
 import json
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -34,13 +35,36 @@ def kv_set(con, key, value):
                 (key, str(value)))
 
 
-def fetch_history(cfg, last_id):
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def _post(url, fields, hops=3):
+    """POST form fields; follow redirects by re-POSTing (urllib would turn them into a GET and drop the body)."""
+    data = urllib.parse.urlencode(fields).encode()
+    opener = urllib.request.build_opener(_NoRedirect())
+    for _ in range(hops):
+        req = urllib.request.Request(url, data=data, method='POST',
+                                     headers={'User-Agent': 'curl/8.5.0',
+                                              'Content-Type': 'application/x-www-form-urlencoded'})
+        try:
+            with opener.open(req, timeout=60) as r:
+                return r.read(50 * 1024 * 1024).decode('utf-8', 'replace'), url
+        except urllib.error.HTTPError as e:
+            if e.code in (301, 302, 303, 307, 308) and e.headers.get('Location'):
+                url = urllib.parse.urljoin(url, e.headers['Location'])
+                continue
+            raise
+    raise RuntimeError('too many redirects')
+
+
+def fetch_history(cfg, last_id, debug=None):
     n = cfg['nedarim']
-    data = urllib.parse.urlencode({'Action': 'GetHistoryJson', 'MosadId': n['mosad'], 'ApiPassword': n['api_password'],
-                                   'LastId': last_id or '', 'MaxId': PAGE}).encode()
-    req = urllib.request.Request(URL, data=data, method='POST', headers={'User-Agent': 'curl/8.5.0'})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        body = r.read(50 * 1024 * 1024).decode('utf-8', 'replace')
+    body, final = _post(URL, {'Action': 'GetHistoryJson', 'MosadId': str(n['mosad']).strip(),
+                              'ApiPassword': n['api_password'], 'LastId': last_id or '', 'MaxId': PAGE})
+    if debug is not None:
+        debug['url'] = final
     try:
         rows = json.loads(body)
     except ValueError:
