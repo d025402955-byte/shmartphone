@@ -51,6 +51,31 @@ def do_import(folder):
     stats()
 
 
+def extensions():
+    """List Technoline extensions (ID, key path, type, name) using the stored API key. Read-only."""
+    import urllib.parse
+    import urllib.request
+    with open(CFG, encoding='utf-8') as f:
+        cfg = json.load(f)
+    url = cfg.get('files_url', 'https://api.tlivr.com/ivrFilesApi.php')
+    data = urllib.parse.urlencode({'action': 'foldersList', 'apiKey': cfg['api_key']}).encode()
+    req = urllib.request.Request(url, data=data, method='POST', headers={'User-Agent': 'curl/8.5.0'})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        tree = json.loads(r.read())
+    if isinstance(tree, dict) and tree.get('status') == 'ERROR':
+        print('error:', tree.get('note'))
+        return
+
+    def walk(nodes, path):
+        for n in (nodes.values() if isinstance(nodes, dict) else nodes):
+            if not isinstance(n, dict) or 'id' not in n:
+                continue
+            p = path + ('/' + str(n.get('extension')) if n.get('extension') not in (None, '') else '')
+            print(f"ID {n['id']:>8}   key {p or '/':<12} type {n.get('type', ''):<16} {n.get('name', '')}")
+            walk(n.get('children') or {}, p)
+    walk(tree, '')
+
+
 def stats():
     con = store.connect(db_path())
     print('subscribers:', dict(con.execute('SELECT status, COUNT(*) FROM subscribers GROUP BY status').fetchall()))
@@ -62,5 +87,7 @@ if __name__ == '__main__':
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'stats'
     if cmd == 'import':
         do_import(sys.argv[2])
+    elif cmd == 'extensions':
+        extensions()
     else:
         stats()
