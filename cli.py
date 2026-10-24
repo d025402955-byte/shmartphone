@@ -136,6 +136,25 @@ def doc(word, context=40, name='PBX_DOCUMENTATION_CENTER.md'):
         print('-----')
 
 
+def test_alert(sid, kind='noise', mode='voice'):
+    """Send one real alert of KIND by MODE (ping/voice/message) to subscriber SID's alert phone."""
+    import core
+    with open(CFG, encoding='utf-8') as f:
+        cfg = json.load(f)
+    con = store.connect(cfg['db_path'])
+    sub = con.execute('SELECT * FROM subscribers WHERE id=?', (int(sid),)).fetchone()
+    con.close()
+    phone = sub and sub['alert_phone']
+    if not phone:
+        print('no alert phone for subscriber', sid)
+        return
+    print('to', phone[:3] + '****' + phone[-3:], kind, mode)
+    if mode in ('ping', 'voice'):
+        print(core.send_ping({**cfg, 'alert_mode': mode}, kind, phone))
+    else:
+        print(core.send_alert(cfg, kind, phone, mode='message'))
+
+
 def stats():
     con = store.connect(db_path())
     print('subscribers:', dict(con.execute('SELECT status, COUNT(*) FROM subscribers GROUP BY status').fetchall()))
@@ -151,6 +170,8 @@ if __name__ == '__main__':
         extensions()
     elif cmd == 'log':
         log_window(*sys.argv[2:5])
+    elif cmd == 'testalert':
+        test_alert(*sys.argv[2:5])
     elif cmd == 'doc':
         doc(*sys.argv[2:5])
     elif cmd == 'ext':

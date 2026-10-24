@@ -154,9 +154,9 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 PING_CODES = {'noise': '1111', 'disconnected': '2222', 'balance': '3333'}
-VOICE_TEXTS = {'noise': 'שמרטפון. זוהה רעש בחדר התינוק. קוד {code}',
-               'disconnected': 'שמרטפון. הקו בחדר התינוק התנתק. קוד {code}',
-               'balance': 'שמרטפון. יתרת הפיקדון נגמרה והניטור הסתיים. קוד {code}'}
+VOICE_TEXTS = {'noise': 'שמרטפון. זוהה רעש בחדר התינוק. בשעה {code}.',
+               'disconnected': 'שמרטפון. הקו בחדר התינוק התנתק. בשעה {code}.',
+               'balance': 'שמרטפון. יתרת הפיקדון נגמרה והניטור הסתיים. בשעה {code}.'}
 
 
 def send_ping(cfg, kind, phone):
@@ -167,7 +167,10 @@ def send_ping(cfg, kind, phone):
     params = {'action': 'makeCall', 'phone': phone, 'cid': code}
     if cfg.get('ping_caller_id'):
         params['callerId'] = str(cfg['ping_caller_id'])
-    if mode == 'voice':
+    if mode == 'voice':  # the required 4-digit code is read out: make it the time (HHMM)
+        import datetime
+        import zoneinfo
+        params['cid'] = datetime.datetime.now(zoneinfo.ZoneInfo(cfg.get('timezone', 'Asia/Jerusalem'))).strftime('%H%M')
         params.update({'mode': 'voice', 'apiKey': cfg['api_key'],
                        'voiceText': ((cfg.get('voice_texts') or {}).get(kind) or VOICE_TEXTS.get(kind, ''))[:200]})
     url = cfg.get('files_url', 'https://api.tlivr.com/ivrFilesApi.php')
