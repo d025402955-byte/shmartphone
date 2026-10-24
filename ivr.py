@@ -65,6 +65,7 @@ TEXTS = {
     'pick_prefix': 'להתראות למספר',
     'pick_press': 'הקישו',
     'pick_new': 'לאימות מספר חדש הקישו 9.',
+    'pick_last': 'להתחברות עם פרטי ההתחברות האחרונה, הקישו 0.',
     'starting': 'הניטור מתחיל. אפשר להניח את הטלפון בחדר.',
     'starting_to': 'הניטור מתחיל. ההתראות יישלחו לטלפון',
     'starting_place': 'אפשר להניח את הטלפון בחדר.',
@@ -446,11 +447,18 @@ class Call:
         self.save('act_pick')
         return [self.pick_prompt(choices, intro)]
 
+    def last_alert_phone(self):
+        sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (self.sess['subscriber_id'],)).fetchone() \
+            if self.sess and self.sess['subscriber_id'] else None
+        last = sub and sub['alert_phone']
+        return last if last and last in self.data.get('choices', []) else None
+
     def pick_prompt(self, choices, intro=None):
+        last = [t(self.cfg, 'pick_last')] if self.last_alert_phone() else []
         if len(choices) == 1:
-            files = [intro, t(self.cfg, 'confirm_one'), {'digits': choices[0]}, t(self.cfg, 'confirm_one_keys')]
+            files = [intro] + last + [t(self.cfg, 'confirm_one'), {'digits': choices[0]}, t(self.cfg, 'confirm_one_keys')]
         else:
-            files = [intro]
+            files = [intro] + last
             for i, ph in enumerate(choices, 1):
                 files += [t(self.cfg, 'pick_prefix'), {'digits': ph}, t(self.cfg, 'pick_press'), {'number': str(i)}]
             files.append(t(self.cfg, 'pick_new'))
@@ -461,6 +469,8 @@ class Call:
         if err:
             return err
         choices = self.data.get('choices', [])
+        if key == '0' and self.last_alert_phone():
+            return self.start_monitor(sub, self.last_alert_phone())
         if key.isdigit() and 1 <= int(key) <= len(choices) and key != '9':
             return self.start_monitor(sub, choices[int(key) - 1])
         if key == '9' or (len(choices) == 1 and key == '2'):

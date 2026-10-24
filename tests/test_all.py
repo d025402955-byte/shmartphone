@@ -987,3 +987,20 @@ class VoicemailTests(Base):
         with self.con:
             r = ivr.handle(self.cfg, self.con, {**p, 'menu': '0'}, DAY, 'menu')[0]
         self.assertEqual(r[0]['name'], 'menu')
+
+
+class LastConnectionTests(Base):
+    def test_key0_uses_last_alert_phone(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', alert_phone='0502222222')
+            store.add_verified(self.con, sid, '0501111111', 'admin')
+            store.add_verified(self.con, sid, '0502222222', 'admin')
+        p = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'l1', 'PBXcallStatus': 'CALL'}
+        with self.con:
+            r = ivr.handle(self.cfg, self.con, p, DAY)[0]
+        self.assertIn('הקישו 0', ' '.join(f.get('text', '') for f in r[-1]['files']))
+        with self.con:
+            r = ivr.handle(self.cfg, self.con, {**p, 'apick': '0'}, DAY)[0]
+        self.assertEqual(r[-1]['type'], 'noiseMonitor')
+        self.assertEqual(self.con.execute("SELECT alert_phone FROM sessions WHERE call_id='l1'").fetchone()[0],
+                         '0502222222')
