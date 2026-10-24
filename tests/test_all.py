@@ -225,6 +225,7 @@ class IvrTests(Base):
     def test_menu_info_and_message(self):
         r = self.call('0599999999', mode='menu')
         self.assertEqual(r[0]['type'], 'simpleMenu')
+        self.assertIn('7', r[0]['enabledKeys'].split(','))
         r = self.send(menu='3')
         self.assertEqual(r[-1]['type'], 'hangup')
         self.call('0599999999', mode='message', call='m2')
