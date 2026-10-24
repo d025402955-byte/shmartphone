@@ -920,3 +920,18 @@ class ReconnectChargeTests(Base):
             self.assertEqual(core.queue_reconnect(cfg, self.con, sid, '0521234567', 'c1', '0501112222'), (True, ''))
         core.process_one(cfg, self.db, lambda *a, **k: ('sent', {'billing': '1.00'}), log=lambda *a, **k: None)
         self.assertEqual(self.con.execute('SELECT balance FROM subscribers WHERE id=?', (sid,)).fetchone()[0], 200)
+
+
+class BalanceTests(Base):
+    def test_hear_balance(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='free')
+            store.add_credit(self.con, sid, 5000, source='admin', amount=50)
+        p = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'b1', 'PBXcallStatus': 'CALL'}
+        with self.con:
+            ivr.handle(self.cfg, self.con, p, DAY, 'account')
+        with self.con:
+            r = ivr.handle(self.cfg, self.con, {**p, 'acm': '7'}, DAY, 'account')[0]
+        texts = ' '.join(f.get('text', '') for f in r[0]['files'])
+        self.assertIn('50 שקלים', texts)
+        self.assertIn('50 חיוגים', texts)

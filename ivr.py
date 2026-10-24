@@ -83,6 +83,10 @@ TEXTS = {
     'pay_deposit': 'לפיקדון לפי שימוש, {price} לכל דקת ניטור, הקישו 3.',
     'pay_ok_deposit': 'תודה. הפיקדון נטען. יתרתכם עכשיו {amount} שקלים, מספיקה לכ-{time} ניטור.',
     'account_balance': 'יתרת הפיקדון: {amount} שקלים.',
+    'account_balance_opt': 'לשמיעת יתרת הפיקדון הקישו 7.',
+    'balance_minutes': 'היתרה מספיקה לכ-{time} ניטור.',
+    'balance_reconnects': 'היתרה מספיקה לכ-{n} חיוגים חוזרים לטלפון שבחדר.',
+    'balance_load': 'לטעינת פיקדון הקישו 5, ואחר כך 3.',
     'account_alerts': 'לבחירת סוג ההתראות הקישו 6.',
     'alerts_menu': 'סוג ההתראות כרגע: {mode}. לצינתוק חינם, ואחריו מתקשרים לשמוע מה קרה, הקישו 1. '
                    'להודעה קולית מלאה, בתשלום לפי עלות השיחה מתוך הפיקדון, הקישו 2. לחזרה הקישו 0.',
@@ -954,6 +958,7 @@ class Call:
         self.save('acc_menu')
         return [ask('acm', [prefix, t(self.cfg, 'account_menu'),
                             t(self.cfg, 'account_pay') if self.payments_on() else None,
+                            t(self.cfg, 'account_balance_opt'),
                             t(self.cfg, 'account_alerts') if self.cfg.get('alert_choice') else None])]
 
     # ----- payments (Technoline creditCard module -> Nedarim Plus) -----
@@ -1098,6 +1103,16 @@ class Call:
             return self.ask_verify_number(sub, [])
         if key == '5' and self.payments_on():
             return self.pay_menu(sub)
+        if key == '7':
+            bal = store.balance(sub)
+            parts = [t(self.cfg, 'account_balance', amount=self.money(max(bal, 0) / 100))]
+            if sub['plan'] == 'prepaid' and bal > 0:
+                parts.append(t(self.cfg, 'balance_minutes', time=self.say_minutes(bal // self.per_minute())))
+            elif bal >= 100:
+                parts.append(t(self.cfg, 'balance_reconnects', n=bal // 100))
+            if self.payments_on() and self.deposits():
+                parts.append(t(self.cfg, 'balance_load'))
+            return self.account(' '.join(parts))
         if key == '6' and self.cfg.get('alert_choice'):
             return self.alert_mode_menu(sub)
         return hangup(self.cfg, t(self.cfg, 'goodbye'))
