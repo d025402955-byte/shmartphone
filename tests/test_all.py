@@ -22,7 +22,7 @@ PBX = '0765674200'
 def make_cfg(db):
     return {'api_key': 'k', 'ivr_token': 'ivrtok', 'event_token': 'evtok', 'public_url': 'https://x.example',
             'secret_key': 's' * 64, 'db_path': db, 'pbx_number': PBX, 'auto_trial_days': 7, 'trial_days': 7,
-            'admin_password_hash': admin.hash_password('secretpw1', rounds=1000)}
+            'admin_password_hash': admin.hash_password('secretpw1', rounds=1000), 'niqqud': False}
 
 
 class Base(unittest.TestCase):
@@ -1060,3 +1060,12 @@ class MoreNumbersTests(Base):
         while core.process_one(self.cfg, self.db, fail, log=lambda *a, **k: None):
             pass
         self.assertEqual(len(sends), 3)  # main failed -> the fallback number got it too
+
+
+class NiqqudTests(Base):
+    def test_spoken_texts_are_vowel_marked(self):
+        cfg = {**self.cfg, 'niqqud': True}
+        self.assertIn('הַקִּישׁוּ', ivr.t(cfg, 'menu'))
+        self.assertEqual(ivr.t(cfg, 'notice_noise_one', hh='23:40'), 'בְּשָׁעָה 23:40 זֻהָה רַעַשׁ בְּחֶדֶר הַתִּינוֹק.')
+        self.assertIn('שְׁמַרְטַפוֹן', core.text(cfg, 'alert_noise'))
+        self.assertEqual(ivr.t(cfg, 'alerts_menu', mode='x')[:3], 'סוג')  # missing key: plain text

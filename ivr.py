@@ -24,6 +24,7 @@ import re
 import secrets
 import time
 
+import niqqud
 import store
 
 MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history', 'pay', 'reconnect', 'alert', 'stop', 'voicemail')
@@ -196,7 +197,10 @@ TEXTS = {
 
 
 def t(cfg, key, **kw):
-    return (cfg.get('texts', {}).get(key) or TEXTS[key]).format(**kw)
+    text = cfg.get('texts', {}).get(key)
+    if not text and cfg.get('niqqud', True):
+        text = niqqud.IVR.get(key)
+    return (text or TEXTS[key]).format(**kw)
 
 
 def say(*parts):

@@ -5,6 +5,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import niqqud
 import store
 
 DEFAULT_TEXTS = {
@@ -16,7 +17,8 @@ DEFAULT_TEXTS = {
 
 
 def text(cfg, key, **kw):
-    t = cfg.get('texts', {}).get(key) or DEFAULT_TEXTS[key]
+    t = cfg.get('texts', {}).get(key) or (niqqud.CORE.get(key) if cfg.get('niqqud', True) else None) \
+        or DEFAULT_TEXTS[key]
     return t.format(**kw)
 
 
@@ -187,7 +189,9 @@ def send_ping(cfg, kind, phone):
         import zoneinfo
         params['cid'] = datetime.datetime.now(zoneinfo.ZoneInfo(cfg.get('timezone', 'Asia/Jerusalem'))).strftime('%H%M')
         params.update({'mode': 'voice', 'apiKey': cfg['api_key'],
-                       'voiceText': ((cfg.get('voice_texts') or {}).get(kind) or VOICE_TEXTS.get(kind, ''))[:200]})
+                       'voiceText': ((cfg.get('voice_texts') or {}).get(kind) or
+                                     (niqqud.VOICE.get(kind) if cfg.get('niqqud', True) else None) or
+                                     VOICE_TEXTS.get(kind, ''))[:200]})
     url = cfg.get('files_url', 'https://api.tlivr.com/ivrFilesApi.php')
     req = urllib.request.Request(url, data=urllib.parse.urlencode(params).encode(),
                                  headers={'User-Agent': 'curl/8.5.0'}, method='POST')
