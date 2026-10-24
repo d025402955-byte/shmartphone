@@ -158,7 +158,7 @@ TEXTS = {
     'pay_failed': 'התשלום לא הושלם. אפשר לנסות שוב בכל עת.',
     'pay_ok_monthly': 'תודה. המנוי החודשי הופעל, והוא בתוקף עד {date}. החיוב יתחדש מדי חודש.',
     'pay_ok_annual': 'תודה. המנוי השנתי הופעל, והוא בתוקף עד {date}.',
-    'pay_next': 'להפעלת השְׁמַרְטַפוֹן התקשרו שוב ובחרו 1. להתראות.',
+    'pay_next': 'להפעלת המערכת הקישו 1 בתפריט הראשי.',
     'al_disconnected': 'שלום, כאן שְׁמַרְטַפוֹן. הקו בחדר התינוק התנתק.',
     'al_keys': 'לחיוג לטלפון שבחדר וחידוש הניטור, בעלות של כשקל מהפיקדון, הקישו 1. לסיום הקישו 0.',
     'rc_dialing': 'מתקשרים לטלפון שבחדר. נא להמתין על הקו.',
@@ -231,6 +231,7 @@ class Call:
         self.sess = con.execute('SELECT * FROM sessions WHERE call_id=?', (self.call_id,)).fetchone()
         self.data = json.loads(self.sess['data']) if self.sess and self.sess['data'] else {}
         self.wake = False
+        self.end_call = False  # True = really hang up even when the call came through the main menu
 
     # ----- session helpers -----
     def save(self, step=None, **fields):
@@ -415,7 +416,8 @@ class Call:
 
     def on_menu(self, key):
         mode = MENU_KEYS.get(key)
-        if not mode:
+        if not mode:  # no key after the menu was repeated: end the call
+            self.end_call = True
             return hangup(self.cfg, t(self.cfg, 'goodbye'))
         self.save(None, mode=mode)
         return self.entry(mode)
@@ -1308,8 +1310,26 @@ def apply_voice(cfg, resp):
     return resp
 
 
+def back_to_menu(c, resp):
+    """In the main-menu extension every finished action returns to the main menu instead of hanging up."""
+    if not resp or resp[-1] != {'type': 'hangup'} or c.end_call or c.p.get('PBXcallStatus') == 'HANGUP':
+        return resp
+    bye = t(c.cfg, 'goodbye')
+    out = []
+    for cmd in resp[:-1]:
+        if cmd.get('type') == 'simpleMessage':
+            files = [f for f in cmd.get('files', []) if f.get('text') != bye]
+            if not files:
+                continue
+            cmd = {**cmd, 'files': files}
+        out.append(cmd)
+    return out + c.menu(notices=False)
+
+
 def handle(cfg, con, p, day, mode='activate', now=None):
     """Returns (commands, wake_worker)."""
     c = Call(cfg, con, p, day, now or time.time())
     resp = c.run(mode if mode in MODES else 'activate')
+    if mode == 'menu':
+        resp = back_to_menu(c, resp)
     return apply_voice(cfg, resp), c.wake

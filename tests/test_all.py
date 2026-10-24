@@ -229,6 +229,8 @@ class IvrTests(Base):
         self.assertEqual(r[0]['type'], 'simpleMenu')
         self.assertIn('7', r[0]['enabledKeys'].split(','))
         r = self.send(menu='3')
+        self.assertEqual((r[0]['type'], r[-1]['type'], r[-1]['name']), ('simpleMessage', 'simpleMenu', 'menu'))
+        r = self.send(menu='ERROR')  # no key after the menu repeated: the call really ends
         self.assertEqual(r[-1]['type'], 'hangup')
         self.call('0599999999', mode='message', call='m2')
         r = self.send()
