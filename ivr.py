@@ -50,6 +50,7 @@ TEXTS = {
             'טלפונים נוספים שמותר להפעיל מהם את השירות מוסיפים בשלוחה 4. '
             'חשוב: השאירו את הטלפון שבחדר מחובר למטען, בקרבת מקום השינה, ואל תנתקו את השיחה. '
             'ספקים מסוימים מנתקים שיחות ארוכות אחרי כשעה. אם זה קורה, נתקשר אליכם להודיע שהקו התנתק. '
+            'אחרי כל התראה אפשר להתקשר למערכת ולשמוע מה קרה, ואחרי ניתוק גם לחדש את הניטור בחיוג לטלפון שבחדר. '
             'השירות הוא עזר בלבד, ואינו מחליף השגחה של מבוגר. תודה שבחרתם בשמרטפון.',
     'welcome_trial': 'ברוכים הבאים לשמרטפון. הופעלה עבורכם תקופת ניסיון של {days} ימים.',
     'not_registered': 'מספר הטלפון שממנו התקשרתם אינו רשום בשירות שמרטפון.',
@@ -122,7 +123,9 @@ TEXTS = {
     'phones_remove': 'להסרת המספר',
     'phones_removed': 'הטלפון הוסר.',
     'account_menu': 'לשמיעת מצב המנוי הקישו 1. לשמיעת והסרת המספרים המאומתים לקבלת התראות הקישו 2. '
-                    'לניהול הטלפונים המורשים הקישו 3. לאימות מספר חדש לקבלת התראות הקישו 4. לסיום הקישו 0.',
+                    'לניהול הטלפונים המורשים הקישו 3. לאימות מספר חדש לקבלת התראות הקישו 4.',
+    'end_zero': 'לסיום הקישו 0.',
+    'back_zero_short': 'לחזרה הקישו 0.',
     'account_status': 'המנוי שלכם {status}. סוג המנוי: {plan}.',
     'account_until': 'בתוקף עד {date}.',
     'account_verified': 'המספרים המאומתים לקבלת התראות:',
@@ -135,7 +138,7 @@ TEXTS = {
     'goodbye': 'להתראות.',
     'account_pay': 'להצטרפות או לחידוש מנוי בתשלום הקישו 5.',
     'pay_menu': 'למנוי חודשי ב-{monthly} שקלים לחודש, בהוראת קבע באשראי, הקישו 1. '
-                'למנוי שנתי ב-{annual} שקלים, בתשלום אחד, הקישו 2. לחזרה הקישו 0.',
+                'למנוי שנתי ב-{annual} שקלים, בתשלום אחד, הקישו 2.',
     'pay_card_intro': 'נעבור עכשיו להקשת פרטי כרטיס האשראי.',
     'pay_failed': 'התשלום לא הושלם. אפשר לנסות שוב בכל עת.',
     'pay_ok_monthly': 'תודה. המנוי החודשי הופעל, והוא בתוקף עד {date}. החיוב יתחדש מדי חודש.',
@@ -959,7 +962,8 @@ class Call:
         return [ask('acm', [prefix, t(self.cfg, 'account_menu'),
                             t(self.cfg, 'account_pay') if self.payments_on() else None,
                             t(self.cfg, 'account_balance_opt'),
-                            t(self.cfg, 'account_alerts') if self.cfg.get('alert_choice') else None])]
+                            t(self.cfg, 'account_alerts') if self.cfg.get('alert_choice') else None,
+                            t(self.cfg, 'end_zero')])]
 
     # ----- payments (Technoline creditCard module -> Nedarim Plus) -----
     def payments_on(self):
@@ -983,7 +987,8 @@ class Call:
         self.save('pay_plan')
         return [ask('pplan', [prefix, t(self.cfg, 'pay_menu', monthly=self.money(monthly),
                                          annual=self.money(annual)),
-                              t(self.cfg, 'pay_deposit', price=self.price_words()) if self.deposits() else None],
+                              t(self.cfg, 'pay_deposit', price=self.price_words()) if self.deposits() else None,
+                              t(self.cfg, 'back_zero_short')],
                     timeout=8)]
 
     def deposits(self):
