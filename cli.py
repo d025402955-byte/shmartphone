@@ -108,6 +108,34 @@ def log_window(day, hhmm, minutes=3):
         print(parts[0][11:19], parts[3] if len(parts) > 3 else line)
 
 
+def doc(word, context=40):
+    """Search Technoline's documentation for word; prints matching lines with context. Read-only."""
+    import urllib.request
+    path = '/tmp/pbx_doc.md'
+    if not os.path.exists(path):
+        req = urllib.request.Request('https://app.ipsales.co.il/PBX_DOCUMENTATION_CENTER.md',
+                                     headers={'User-Agent': 'curl/8.5.0'})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            data = r.read()
+        if data[:2] == b'\x1f\x8b':
+            import gzip
+            data = gzip.decompress(data)
+        with open(path, 'wb') as f:
+            f.write(data)
+    lines = open(path, encoding='utf-8', errors='replace').read().splitlines()
+    print('doc lines:', len(lines))
+    hits = [i for i, l in enumerate(lines) if word.lower() in l.lower()]
+    print('hits:', len(hits), hits[:40])
+    shown = -1
+    for i in hits:
+        if i <= shown:
+            continue
+        for j in range(max(0, i - 3), min(len(lines), i + int(context))):
+            print(j, lines[j][:220])
+        shown = i + int(context) - 1
+        print('-----')
+
+
 def stats():
     con = store.connect(db_path())
     print('subscribers:', dict(con.execute('SELECT status, COUNT(*) FROM subscribers GROUP BY status').fetchall()))
@@ -123,6 +151,8 @@ if __name__ == '__main__':
         extensions()
     elif cmd == 'log':
         log_window(*sys.argv[2:5])
+    elif cmd == 'doc':
+        doc(*sys.argv[2:4])
     elif cmd == 'ext':
         for e in sys.argv[2:]:
             ext_settings(e)
