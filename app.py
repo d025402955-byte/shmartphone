@@ -132,8 +132,11 @@ def make_handler(cfg):
                     con.close()
                 if wake_now:
                     wake.set()
-                results = {k: params[k] for k in ('join', 'DURATION_join', 'nm', 'DURATION_nm', 'rcw', 'rcd', 'alm', 'menu', 'payment', 'hnav')
+                results = {k: params[k] for k in ('join', 'DURATION_join', 'nm', 'DURATION_nm', 'rcw', 'rcd', 'alm', 'menu',
+                                                  'payment', 'hnav', 'vnav', 'rec', 'FILEID_rec', 'DURATION_rec')
                            if k in params}
+                if 'vpin' in params:
+                    results['vpin'] = '***'
                 print('IVR', mode, params.get('PBXcallStatus'), params.get('PBXcallType', ''),
                       'types=' + ','.join(c.get('type', '') for c in resp), json.dumps(results), flush=True)
                 return self.json(200, resp)

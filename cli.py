@@ -175,6 +175,13 @@ def credit(phone, shekels):
     fix_owner(path)
 
 
+def messages():
+    con = store.connect(db_path())
+    for r in con.execute('SELECT id, phone, file_id, file_name, duration, state, created FROM messages ORDER BY id DESC LIMIT 10'):
+        print(dict(r))
+    con.close()
+
+
 def stats():
     con = store.connect(db_path())
     print('subscribers:', dict(con.execute('SELECT status, COUNT(*) FROM subscribers GROUP BY status').fetchall()))
@@ -190,6 +197,8 @@ if __name__ == '__main__':
         extensions()
     elif cmd == 'log':
         log_window(*sys.argv[2:5])
+    elif cmd == 'messages':
+        messages()
     elif cmd == 'credit':
         credit(*sys.argv[2:4])
     elif cmd == 'testalert':
