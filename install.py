@@ -253,6 +253,22 @@ def set_alerts():
     print('alerts:', mode, '(voice offered)' if cfg['voice_alerts_offer'] else '')
 
 
+def set_price():
+    """install.py price AGOROT  deposit price per monitoring minute"""
+    try:
+        agorot = int(sys.argv[2])
+        assert 1 <= agorot <= 100
+    except (IndexError, ValueError, AssertionError):
+        print('usage: install.py price AGOROT   (1-100)')
+        return
+    with open(NEW_CFG, encoding='utf-8') as f:
+        cfg = json.load(f)
+    cfg.setdefault('payments', {})['per_minute_agorot'] = agorot
+    write_config(cfg, service_user())
+    run('systemctl', 'restart', SERVICE)
+    print('price per minute (agorot):', agorot)
+
+
 def set_payments():
     """Turn on payments by phone (Technoline creditCard -> Nedarim Plus) and the renewal sync."""
     with open(NEW_CFG, encoding='utf-8') as f:
@@ -328,5 +344,5 @@ if __name__ == '__main__':
     if os.geteuid() != 0:
         sys.exit('run as root')
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'install'
-    {'install': install, 'password': set_password, 'rollback': rollback, 'smtp': set_smtp, 'voice': set_voice, 'alerts': set_alerts, 'payments': set_payments, 'reconnect': set_reconnect,
+    {'install': install, 'password': set_password, 'rollback': rollback, 'smtp': set_smtp, 'voice': set_voice, 'alerts': set_alerts, 'price': set_price, 'payments': set_payments, 'reconnect': set_reconnect,
      'status': lambda: print(run('systemctl', 'status', SERVICE, '--no-pager', check=False))}[cmd]()
