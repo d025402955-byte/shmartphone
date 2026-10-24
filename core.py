@@ -8,10 +8,10 @@ import urllib.request
 import store
 
 DEFAULT_TEXTS = {
-    'alert_noise': 'שמרטפון. זוהה רעש בחדר התינוק.',
-    'alert_disconnected': 'שמרטפון. הקו בחדר התינוק התנתק.',
+    'alert_noise': 'שְׁמַרְטְפוֹן. זוהה רעש בחדר התינוק.',
+    'alert_disconnected': 'שְׁמַרְטְפוֹן. הקו בחדר התינוק התנתק.',
     'alert_reconnect': '',  # not spoken: the answered call goes into the monitoring extension
-    'alert_balance': 'שמרטפון. יתרת הפיקדון נגמרה והניטור הסתיים.',
+    'alert_balance': 'שְׁמַרְטְפוֹן. יתרת הפיקדון נגמרה והניטור הסתיים.',
 }
 
 
@@ -158,9 +158,9 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 PING_CODES = {'noise': '1111', 'disconnected': '2222', 'balance': '3333'}
-VOICE_TEXTS = {'noise': 'שמרטפון. זוהה רעש בחדר התינוק. בשעה {code}.',
-               'disconnected': 'שמרטפון. הקו בחדר התינוק התנתק. בשעה {code}.',
-               'balance': 'שמרטפון. יתרת הפיקדון נגמרה והניטור הסתיים. בשעה {code}.'}
+VOICE_TEXTS = {'noise': 'שְׁמַרְטְפוֹן. זוהה רעש בחדר התינוק. בשעה {code}.',
+               'disconnected': 'שְׁמַרְטְפוֹן. הקו בחדר התינוק התנתק. בשעה {code}.',
+               'balance': 'שְׁמַרְטְפוֹן. יתרת הפיקדון נגמרה והניטור הסתיים. בשעה {code}.'}
 
 
 def send_ping(cfg, kind, phone):
