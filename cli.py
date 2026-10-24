@@ -94,6 +94,20 @@ def ext_settings(ext_id):
     print(text[:1500])
 
 
+def log_window(day, hhmm, minutes=3):
+    """Print service log lines of day (YYYYMMDD) from hhmm for N minutes (no special characters needed)."""
+    import datetime
+    import subprocess
+    start = datetime.datetime.strptime(day + hhmm, '%Y%m%d%H%M')
+    end = start + datetime.timedelta(minutes=int(minutes))
+    out = subprocess.run(['journalctl', '-u', 'shmartphone', '--no-pager', '-o', 'short-iso',
+                          '-S', start.strftime('%Y-%m-%d %H:%M:%S'), '-U', end.strftime('%Y-%m-%d %H:%M:%S')],
+                         capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        parts = line.split(' ', 3)
+        print(parts[0][11:19], parts[3] if len(parts) > 3 else line)
+
+
 def stats():
     con = store.connect(db_path())
     print('subscribers:', dict(con.execute('SELECT status, COUNT(*) FROM subscribers GROUP BY status').fetchall()))
@@ -107,6 +121,8 @@ if __name__ == '__main__':
         do_import(sys.argv[2])
     elif cmd == 'extensions':
         extensions()
+    elif cmd == 'log':
+        log_window(*sys.argv[2:5])
     elif cmd == 'ext':
         for e in sys.argv[2:]:
             ext_settings(e)
