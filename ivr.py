@@ -73,6 +73,9 @@ TEXTS = {
     'notice_balance': 'בשעה {hh} יתרת הפיקדון נגמרה, והניטור הסתיים.',
     'notice_history': 'לשמיעת הרעשים הקישו 7 בתפריט.',
     'al_keys_menu': 'לחיוג לטלפון שבחדר וחידוש הניטור, בעלות של כשקל מהפיקדון, הקישו 1. לתפריט הראשי הקישו 0.',
+    'al_keys_menu_free': 'לחיוג לטלפון שבחדר וחידוש הניטור הקישו 1. לתפריט הראשי הקישו 0.',
+    'al_keys_free': 'לחיוג לטלפון שבחדר וחידוש הניטור הקישו 1. לסיום הקישו 0.',
+    'rc_keys_free': 'לחיוג לטלפון שבחדר והפעלת הניטור מחדש הקישו 1. לסיום הקישו 0.',
     'rc_no_balance': 'החיוג לטלפון שבחדר עולה כשקל, ומחויב מהפיקדון. אין מספיק יתרה בפיקדון. '
                      'לטעינת פיקדון התקשרו מהטלפון הרשום, הקישו 6, אחר כך 5, ואחר כך 3.',
     'stop_none': 'אין כרגע ניטור פעיל ששולח אליכם התראות.',
@@ -362,7 +365,7 @@ class Call:
                 self.save('al_menu')
                 return [{'type': 'simpleMenu', 'name': 'alm', 'enabledKeys': '0,1', 'times': 2, 'timeout': 8,
                          'errorReturn': 'ERROR',
-                         'files': [{'text': x} for x in parts + [t(self.cfg, 'al_keys_menu')]]}]
+                         'files': [{'text': x} for x in parts + [t(self.cfg, self.rc_key('al_keys_menu'))]]}]
         return self.menu(parts, notices=False)
 
     # ----- 8: stop alerts from a running room -----
@@ -678,7 +681,7 @@ class Call:
         files = [prefix]
         if len(rooms) == 1:
             hh = datetime.datetime.fromtimestamp(rooms[0][3], tz).strftime('%H:%M')
-            files += [t(self.cfg, 'rc_one', hh=hh), t(self.cfg, 'rc_keys')]
+            files += [t(self.cfg, 'rc_one', hh=hh), t(self.cfg, self.rc_key('rc_keys'))]
         else:
             files.append(t(self.cfg, 'rc_many'))
             for i, r in enumerate(rooms, 1):
@@ -722,6 +725,10 @@ class Call:
         self.bind_id(row['subscriber_id'])
         return self.alert_menu()
 
+    def rc_key(self, name):
+        """Prompt variant that mentions the reconnect cost only while reconnects are charged."""
+        return name if self.cfg.get('reconnect_charge', True) else name + '_free'
+
     def bind_id(self, sid):
         self.save(self.sess['step'] if self.sess else None, subscriber_id=sid)
 
@@ -729,7 +736,7 @@ class Call:
         self.save('al_menu')
         return [{'type': 'simpleMenu', 'name': 'alm', 'enabledKeys': '0,1', 'times': 2, 'timeout': 8,
                  'errorReturn': 'ERROR',
-                 'files': [{'text': x} for x in (prefix, t(self.cfg, 'al_disconnected'), t(self.cfg, 'al_keys')) if x]}]
+                 'files': [{'text': x} for x in (prefix, t(self.cfg, 'al_disconnected'), t(self.cfg, self.rc_key('al_keys'))) if x]}]
 
     def on_alert_menu(self, key):
         if key != '1':
