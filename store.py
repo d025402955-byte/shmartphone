@@ -123,7 +123,8 @@ MIGRATIONS = {
     'sessions': [('step', 'TEXT'), ('mode', 'TEXT'), ('data', 'TEXT'), ('mon_start', 'REAL'), ('charged', 'INTEGER')],
     'alerts': [('payload', 'TEXT'), ('not_before', 'REAL'), ('heard', 'REAL'), ('charged', 'INTEGER')],
     'noise_events': [('file_name', 'TEXT'), ('folder', 'TEXT')],
-    'subscribers': [('billing', 'TEXT'), ('keva_id', 'TEXT'), ('balance', 'INTEGER'), ('alert_mode', 'TEXT')],
+    'subscribers': [('billing', 'TEXT'), ('keva_id', 'TEXT'), ('balance', 'INTEGER'), ('alert_mode', 'TEXT'),
+                    ('alert_extra', 'TEXT'), ('alert_backup', 'TEXT')],
 }
 
 GRACE_DAYS = 5  # a paid subscription keeps working this many days after its paid-until date

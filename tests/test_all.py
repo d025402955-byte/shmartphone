@@ -128,6 +128,8 @@ class IvrTests(Base):
         self.assertEqual(self.ask_name(r), 'apick')
         self.assertEqual(store.verified_phones(self.con, sid), ['0501112222'])
         r = self.send(apick='1')
+        self.assertEqual(self.ask_name(r), 'aconf')  # activate / change / add another / add fallback
+        r = self.send(aconf='1')
         self.assertEqual(self.types(r), ['simpleMessage', 'noiseMonitor'])
         self.assertEqual(r[-1]['roomId'], f's{sid}-0521234567')
         self.assertEqual(r[-1]['alertUrl'], 'https://x.example/events/evtok')
@@ -177,7 +179,8 @@ class IvrTests(Base):
         r = self.send(apick='9')
         self.assertEqual(self.ask_name(r), 'vnum')
         self.call('0521234567', call='c2')
-        r = self.send(apick='2')
+        self.send(apick='2')
+        r = self.send(aconf='1')
         self.assertEqual(r[-1]['type'], 'noiseMonitor')
 
     def test_listen(self):
@@ -187,6 +190,7 @@ class IvrTests(Base):
         self.assertEqual(self.call('0501112222', mode='listen', call='L0')[-1]['type'], 'hangup')  # nothing active
         self.call('0521234567', call='M1')
         self.send(apick='1')
+        self.send(aconf='1')
         r = self.call('0501112222', mode='listen', call='L1')
         self.assertEqual(r[-1], {'type': 'noiseMonitorJoin', 'name': 'join', 'roomId': f's{sid}-0521234567'})
         r = self.send(join='LEFT')  # left right away: the caller is told it did not work
@@ -256,6 +260,8 @@ class EventTests(Base):
             ivr.handle(self.cfg, self.con, p, DAY)
         with self.con:
             ivr.handle(self.cfg, self.con, {**p, 'apick': '1'}, DAY)
+        with self.con:
+            ivr.handle(self.cfg, self.con, {**p, 'apick': '1', 'aconf': '1'}, DAY)
         return sid
 
     def ev(self, kind, **kw):
@@ -443,6 +449,8 @@ class HistoryTests(Base):
             ivr.handle(self.cfg, self.con, p, DAY)
         with self.con:
             ivr.handle(self.cfg, self.con, {**p, 'apick': '1'}, DAY)
+        with self.con:
+            ivr.handle(self.cfg, self.con, {**p, 'apick': '1', 'aconf': '1'}, DAY)
         room = f's{sid}-0521234567'
         now = time.time()
         base = {'time': now, 'roomId': room, 'callId': 'c1', 'num': PBX, 'eventId': 'ev1'}
@@ -608,6 +616,7 @@ class ReconnectTests(Base):
                 return ivr.handle(self.cfg, self.con, p, DAY, mode)[0]
         call(room)
         call({**room, 'apick': '1'})
+        call({**room, 'apick': '1', 'aconf': '1'})
         with self.con:  # the provider cuts the room call
             core.handle_event(self.cfg, self.con, {'event': 'disconnected', 'time': time.time(), 'callId': 'r1',
                                                    'roomId': f's{sid}-0521234567', 'num': PBX, 'reason': 'hangup'},
@@ -671,6 +680,7 @@ class AlertReconnectTests(Base):
         self.room = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'r1', 'PBXcallStatus': 'CALL'}
         self.call(self.room)
         self.call({**self.room, 'apick': '1'})
+        self.call({**self.room, 'apick': '1', 'aconf': '1'})
         with self.con:
             core.handle_event(self.cfg, self.con, {'event': 'disconnected', 'time': time.time(), 'callId': 'r1',
                                                    'roomId': f's{sid}-0521234567', 'num': PBX, 'reason': 'hangup'},
@@ -773,7 +783,8 @@ class PingAndDepositTests(Base):
 
     def start_room(self):
         self.ivr('0521234567', 'c1')
-        return self.ivr('0521234567', 'c1', apick='1')
+        self.ivr('0521234567', 'c1', apick='1')
+        return self.ivr('0521234567', 'c1', apick='1', aconf='1')
 
     def test_start_says_alert_phone(self):
         r = self.start_room()
@@ -1004,3 +1015,48 @@ class LastConnectionTests(Base):
         self.assertEqual(r[-1]['type'], 'noiseMonitor')
         self.assertEqual(self.con.execute("SELECT alert_phone FROM sessions WHERE call_id='l1'").fetchone()[0],
                          '0502222222')
+
+
+class MoreNumbersTests(Base):
+    def test_extra_and_backup_numbers(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567')
+            for ph in ('0501111111', '0502222222', '0503333333'):
+                store.add_verified(self.con, sid, ph, 'admin')
+        p = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'c1', 'PBXcallStatus': 'CALL'}
+        call = lambda **a: ivr.handle(self.cfg, self.con, {**p, **a}, DAY)[0]
+        with self.con:
+            call()
+        with self.con:
+            r = call(apick='1')
+        self.assertEqual(r[0]['name'], 'aconf')
+        with self.con:
+            r = call(apick='1', aconf='3')  # add another number
+        self.assertEqual(r[0]['name'], 'amore')
+        with self.con:
+            r = call(apick='1', aconf='3', amore='1')
+        self.assertEqual(r[0]['name'], 'aconf')
+        with self.con:
+            call(apick='1', aconf='4')
+        with self.con:
+            r = call(apick='1', aconf='4', amore='1')  # fallback = the remaining number
+        texts = [f.get('digits') for f in r[0]['files'] if f.get('digits')]
+        self.assertEqual(len(texts), 3)
+        with self.con:
+            r = call(apick='1', aconf='1')
+        self.assertEqual(r[-1]['type'], 'noiseMonitor')
+        room = r[-1]['roomId']
+        e = {'event': 'monitorStart', 'time': time.time(), 'roomId': room, 'callId': 'c1', 'num': PBX}
+        with self.con:
+            core.handle_event(self.cfg, self.con, e, 'monitorStart')
+            core.handle_event(self.cfg, self.con, {**e, 'event': 'noise', 'eventId': 'n1'}, 'noise')
+        phones = sorted(r[0] for r in self.con.execute("SELECT alert_phone FROM alerts WHERE kind='noise'"))
+        self.assertEqual(len(phones), 2)  # main + additional
+        sends = []
+
+        def fail(cfg, kind, phone, text=None, mode=None):
+            sends.append(phone)
+            return 'failed', {}
+        while core.process_one(self.cfg, self.db, fail, log=lambda *a, **k: None):
+            pass
+        self.assertEqual(len(sends), 3)  # main failed -> the fallback number got it too

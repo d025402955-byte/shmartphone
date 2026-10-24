@@ -66,6 +66,15 @@ TEXTS = {
     'pick_press': 'הקישו',
     'pick_new': 'לאימות מספר חדש הקישו 9.',
     'pick_last': 'להתחברות עם פרטי ההתחברות האחרונה, הקישו 0.',
+    'conf_to': 'ההתראות יישלחו למספר',
+    'conf_and': 'וגם למספר',
+    'conf_backup': 'ואם ההתראה לא תגיע, למספר',
+    'conf_keys': 'להפעלה הקישו 1. לשינוי המספר הקישו 2. להוספת מספר נוסף לקבלת התראות הקישו 3. '
+                 'להוספת מספר למקרה שההתראה לא תגיע למספר הראשי הקישו 4.',
+    'more_pick': 'להוספת המספר',
+    'more_new': 'לאימות מספר חדש הקישו 9. לחזרה הקישו 0.',
+    'more_added': 'המספר נוסף.',
+    'more_max': 'אפשר להוסיף עד שלושה מספרים נוספים.',
     'starting': 'הניטור מתחיל. אפשר להניח את הטלפון בחדר.',
     'starting_to': 'הניטור מתחיל. ההתראות יישלחו לטלפון',
     'starting_place': 'אפשר להניח את הטלפון בחדר.',
@@ -304,6 +313,7 @@ class Call:
             'rc_done': ('rcd', self.on_reconnect_done), 'stop_pick': ('stp', self.on_stop_pick),
             'al_mode': ('alt', self.on_alert_mode), 'pay_dep': ('pdep', self.on_deposit_pick),
             'vm_pin': ('vpin', self.on_vm_pin), 'vm_nav': ('vnav', self.on_vm_nav),
+            'act_conf': ('aconf', self.on_act_conf), 'act_more': ('amore', self.on_act_more),
         }
         if step in handlers and handlers[step][0] in p:
             return handlers[step][1](p[handlers[step][0]])
@@ -386,9 +396,11 @@ class Call:
 
     # ----- 8: stop alerts from a running room -----
     def live_rooms_to_me(self):
-        return self.con.execute("SELECT * FROM sessions WHERE alert_phone=? AND status='monitoring' AND ended IS NULL "
-                                "AND started>? ORDER BY started DESC LIMIT 8",
-                                (self.phone, self.now - 12 * 3600)).fetchall()
+        rows = self.con.execute("SELECT * FROM sessions WHERE (alert_phone=? OR data LIKE ?) AND status='monitoring' "
+                                "AND ended IS NULL AND started>? ORDER BY started DESC LIMIT 8",
+                                (self.phone, f'%{self.phone}%', self.now - 12 * 3600)).fetchall()
+        return [r for r in rows if r['alert_phone'] == self.phone or
+                self.phone in (json.loads(r['data'] or '{}').get('ax') or [])]
 
     def stop_alerts(self):
         rooms = self.live_rooms_to_me()
@@ -410,7 +422,15 @@ class Call:
         return self.menu(notices=False)
 
     def do_stop(self, call_id):
-        self.con.execute('UPDATE sessions SET alert_phone=NULL WHERE call_id=? AND alert_phone=?', (call_id, self.phone))
+        r = self.con.execute('SELECT * FROM sessions WHERE call_id=?', (call_id,)).fetchone()
+        d = json.loads(r['data'] or '{}')
+        if r['alert_phone'] == self.phone:  # the main number stops all alerts from this room
+            d.pop('ax', None)
+            d.pop('ab', None)
+            self.con.execute('UPDATE sessions SET alert_phone=NULL, data=? WHERE call_id=?', (json.dumps(d), call_id))
+        else:  # an additional number stops only its own alerts
+            d['ax'] = [x for x in d.get('ax') or [] if x != self.phone]
+            self.con.execute('UPDATE sessions SET data=? WHERE call_id=?', (json.dumps(d), call_id))
         store.audit(self.con, 'stop_alerts', {'call': call_id, 'by': self.phone})
         self.save(None)
         return hangup(self.cfg, t(self.cfg, 'stop_done'))
@@ -470,9 +490,13 @@ class Call:
             return err
         choices = self.data.get('choices', [])
         if key == '0' and self.last_alert_phone():
-            return self.start_monitor(sub, self.last_alert_phone())
+            verified = set(store.verified_phones(self.con, sub['id']))
+            extra = [x for x in (sub['alert_extra'] or '').split(',') if x in verified]
+            backup = sub['alert_backup'] if sub['alert_backup'] in verified else None
+            return self.start_monitor(sub, self.last_alert_phone(), extra, backup)
         if key.isdigit() and 1 <= int(key) <= len(choices) and key != '9':
-            return self.start_monitor(sub, choices[int(key) - 1])
+            self.data.update({'ap': choices[int(key) - 1], 'ax': [], 'ab': None})
+            return self.act_conf(sub)
         if key == '9' or (len(choices) == 1 and key == '2'):
             self.data['next'] = 'activate'
             return self.ask_verify_number(sub, [])
@@ -481,9 +505,78 @@ class Call:
             return [self.pick_prompt(choices, t(self.cfg, 'bad_key'))]
         return hangup(self.cfg, t(self.cfg, 'goodbye'))
 
-    def start_monitor(self, sub, alert_phone):
+    # ----- after choosing the alert number: activate / change / add another / add a fallback -----
+    def act_conf(self, sub, prefix=None):
+        files = [prefix, t(self.cfg, 'conf_to'), {'digits': self.data['ap']}]
+        for x in self.data.get('ax') or []:
+            files += [t(self.cfg, 'conf_and'), {'digits': x}]
+        if self.data.get('ab'):
+            files += [t(self.cfg, 'conf_backup'), {'digits': self.data['ab']}]
+        files.append(t(self.cfg, 'conf_keys'))
+        self.save('act_conf')
+        return [ask('aconf', files, timeout=8)]
+
+    def on_act_conf(self, key):
+        sub, _, err = self.subscriber()
+        if err:
+            return err
+        if key == '1':
+            return self.start_monitor(sub, self.data['ap'], self.data.get('ax'), self.data.get('ab'))
+        if key == '2':
+            return self.activate()
+        if key in ('3', '4'):
+            if key == '3' and len(self.data.get('ax') or []) >= 3:
+                return self.act_conf(sub, t(self.cfg, 'more_max'))
+            return self.pick_more(sub, 'extra' if key == '3' else 'backup')
+        if self.retry():
+            return self.act_conf(sub, t(self.cfg, 'bad_key'))
+        return hangup(self.cfg, t(self.cfg, 'goodbye'))
+
+    def pick_more(self, sub, kind):
+        used = {self.phone, self.data.get('ap'), self.data.get('ab'), *(self.data.get('ax') or [])}
+        cands = [x for x in store.verified_phones(self.con, sub['id']) if x not in used][:8]
+        self.data['more_kind'] = kind
+        if not cands:
+            self.data['next'] = 'more'
+            return self.ask_verify_number(sub, [])
+        self.data['more_list'] = cands
+        self.save('act_more')
+        files = []
+        for i, x in enumerate(cands, 1):
+            files += [t(self.cfg, 'more_pick'), {'digits': x}, t(self.cfg, 'pick_press'), {'number': str(i)}]
+        files.append(t(self.cfg, 'more_new'))
+        return [ask('amore', files)]
+
+    def on_act_more(self, key):
+        sub, _, err = self.subscriber()
+        if err:
+            return err
+        cands = self.data.get('more_list', [])
+        if key.isdigit() and 1 <= int(key) <= len(cands) and key != '9':
+            return self.add_more(sub, cands[int(key) - 1])
+        if key == '9':
+            self.data['next'] = 'more'
+            return self.ask_verify_number(sub, [])
+        return self.act_conf(sub)
+
+    def add_more(self, sub, phone):
+        if phone and phone != self.data.get('ap'):
+            if self.data.get('more_kind') == 'backup':
+                self.data['ab'] = phone
+                self.data['ax'] = [x for x in self.data.get('ax') or [] if x != phone]
+            elif phone not in (self.data.get('ax') or []):
+                self.data['ax'] = (self.data.get('ax') or []) + [phone]
+                if self.data.get('ab') == phone:
+                    self.data['ab'] = None
+        return self.act_conf(sub, t(self.cfg, 'more_added'))
+
+    def start_monitor(self, sub, alert_phone, extra=None, backup=None):
         room = f"s{sub['id']}-{self.phone}"[:40]
+        self.data['ax'] = [x for x in (extra or []) if x != alert_phone][:3]
+        self.data['ab'] = backup if backup != alert_phone else None
         store.update_subscriber(self.con, sub['id'], alert_phone=alert_phone)
+        self.con.execute('UPDATE subscribers SET alert_extra=?, alert_backup=? WHERE id=?',
+                         (','.join(self.data['ax']) or None, self.data['ab'], sub['id']))
         self.save('monitoring', room_id=room, alert_phone=alert_phone, status='monitoring', mode='activate')
         cmd = {'type': 'noiseMonitor', 'name': 'nm', 'roomId': room,
                'alertUrl': self.cfg['public_url'].rstrip('/') + '/events/' + self.cfg['event_token']}
@@ -560,7 +653,7 @@ class Call:
             return hangup(self.cfg, t(self.cfg, 'goodbye'))
         if n == self.phone:  # calling from that phone proves it
             store.add_verified(self.con, sub['id'], n, 'caller')
-            return self.verified_continue(sub)
+            return self.verified_continue(sub, n)
         recent = self.con.execute('SELECT COUNT(*) FROM verifications WHERE subscriber_id=? AND created>?',
                                   (sub['id'], self.now - 3600)).fetchone()[0]
         target = self.con.execute('SELECT COUNT(*) FROM verifications WHERE phone=? AND created>?',
@@ -597,15 +690,17 @@ class Call:
         if secrets.compare_digest(value, v['code']):
             self.con.execute('UPDATE verifications SET done=? WHERE id=?', (self.now, v['id']))
             store.add_verified(self.con, sub['id'], v['phone'], 'code')
-            return self.verified_continue(sub)
+            return self.verified_continue(sub, v['phone'])
         if v['attempts'] + 1 < 3:
             self.save('ver_code')
             return [ask('vcode', [t(self.cfg, 'code_wrong'), t(self.cfg, 'code_sent')], mx=4, mn=4, timeout=25,
                         skip=True)]
         return hangup(self.cfg, t(self.cfg, 'code_failed'))
 
-    def verified_continue(self, sub):
+    def verified_continue(self, sub, phone=None):
         nxt = self.data.pop('next', None)
+        if nxt == 'more' and self.data.get('ap'):
+            return self.add_more(sub, phone)
         if nxt == 'activate':
             self.save(None)
             return self.activate(intro_override=t(self.cfg, 'verified_ok'))
@@ -827,7 +922,8 @@ class Call:
             return [{'type': 'hangup'}]
         self.con.execute("UPDATE alerts SET state='answered' WHERE id=?", (row['id'],))
         self.bind(sub)
-        return self.start_monitor(sub, prev['alert_phone'])
+        pd = json.loads(prev['data']) if prev['data'] else {}
+        return self.start_monitor(sub, prev['alert_phone'], pd.get('ax'), pd.get('ab'))
 
     # ----- noise history -----
     def allowed_subs(self):

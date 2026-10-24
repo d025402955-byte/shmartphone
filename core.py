@@ -92,10 +92,18 @@ def handle_event(cfg, con, ev, header_event, now=None):
         "AND state IN ('pending','sending','sent','demo','unknown')",
         (sess['subscriber_id'], kind, now - cooldown)).fetchone()
     state = 'skipped' if recent else 'pending'
-    con.execute('INSERT INTO alerts(unique_key,subscriber_id,call_id,kind,alert_phone,created,state,result,not_before) '
-                'VALUES(?,?,?,?,?,?,?,?,?)',
+    data = json.loads(sess['data']) if 'data' in sess.keys() and sess['data'] else {}
+    backup = data.get('ab')
+    con.execute('INSERT INTO alerts(unique_key,subscriber_id,call_id,kind,alert_phone,created,state,result,not_before,'
+                'payload) VALUES(?,?,?,?,?,?,?,?,?,?)',
                 (key, sess['subscriber_id'], call_id, kind, sess['alert_phone'], now, state,
-                 json.dumps({'note': 'cooldown'}) if recent else None, delay))
+                 json.dumps({'note': 'cooldown'}) if recent else None, delay,
+                 json.dumps({'backup': backup}) if backup else None))
+    for extra in data.get('ax') or []:  # additional numbers get every alert too
+        con.execute('INSERT OR IGNORE INTO alerts(unique_key,subscriber_id,call_id,kind,alert_phone,created,state,'
+                    'result,not_before) VALUES(?,?,?,?,?,?,?,?,?)',
+                    (f'{key}:{extra}', sess['subscriber_id'], call_id, kind, extra, now, state,
+                     json.dumps({'note': 'cooldown'}) if recent else None, delay))
     return 200, 'queued' if state == 'pending' else 'cooldown'
 
 
@@ -267,6 +275,11 @@ def process_one(cfg, db_path, sender=send_alert, log=print):
     with con:
         con.execute('UPDATE alerts SET state=?, result=? WHERE id=?',
                     (state, json.dumps(result, ensure_ascii=False), row['id']))
+        backup = (json.loads(row['payload']) if row['payload'] else {}).get('backup')
+        if state == 'failed' and backup and row['kind'] in PING_CODES:  # did not reach the main number
+            con.execute('INSERT OR IGNORE INTO alerts(unique_key,subscriber_id,call_id,kind,alert_phone,created,state) '
+                        'VALUES(?,?,?,?,?,?,?)', (f"{row['unique_key']}:backup", row['subscriber_id'], row['call_id'],
+                                                  row['kind'], backup, time.time(), 'pending'))
         if state == 'sent' and ((mode == 'message' and row['kind'] in PING_CODES) or
                                 (row['kind'] == 'reconnect' and cfg.get('reconnect_charge', True))):
             store.charge_alert(con, row['subscriber_id'], result.get('billing'), row['id'])
