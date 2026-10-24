@@ -289,14 +289,14 @@ class EventTests(Base):
         self.con.commit()
         calls = []
 
-        def fake(cfg, kind, phone, text=None):
+        def fake(cfg, kind, phone, text=None, **kw):
             calls.append((kind, phone))
             return 'sent', {'campaignId': '1'}
         self.assertTrue(core.process_one(self.cfg, self.db, fake, log=lambda *a, **k: None))
         self.assertFalse(core.process_one(self.cfg, self.db, fake, log=lambda *a, **k: None))
         self.assertEqual(calls, [('noise', '0501112222')])
 
-        def boom(cfg, kind, phone, text=None):
+        def boom(cfg, kind, phone, text=None, **kw):
             raise TimeoutError()
         self.ev('disconnected')
         self.con.commit()
@@ -744,3 +744,161 @@ class EmailTests(Base):
         self.assertEqual(self.con.execute('SELECT state FROM messages').fetchone()[0], 'emailed')
         del self.cfg['smtp']
         self.assertFalse(core.process_message(self.cfg, self.db))
+
+
+class PingAndDepositTests(Base):
+    """Ring-and-drop alerts, call-back notices, stopping alerts, prepaid deposit."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg.update({'alert_mode': 'ping', 'reconnect_extension': '12079',
+                         'payments': {'monthly': 8.9, 'annual': 82, 'per_minute_agorot': 1}})
+        with self.con:
+            self.sid = store.create_subscriber(self.con, main_phone='0521234567')
+            store.add_verified(self.con, self.sid, '0501112222', 'admin')
+        self.room = f's{self.sid}-0521234567'
+
+    def ivr(self, phone, call, mode='activate', **extra):
+        p = {'PBXphone': phone, 'PBXnum': PBX, 'PBXcallId': call, 'PBXcallStatus': 'CALL', **extra}
+        with self.con:
+            return ivr.handle(self.cfg, self.con, p, DAY, mode)[0]
+
+    def ev(self, kind, now=None, **kw):
+        e = {'event': kind, 'time': now or time.time(), 'roomId': self.room, 'callId': 'c1', 'num': PBX, **kw}
+        with self.con:
+            return core.handle_event(self.cfg, self.con, e, kind, now=now)
+
+    def start_room(self):
+        self.ivr('0521234567', 'c1')
+        return self.ivr('0521234567', 'c1', apick='1')
+
+    def test_start_says_alert_phone(self):
+        r = self.start_room()
+        self.assertIn({'digits': '0501112222'}, r[0]['files'])
+        self.assertNotIn('maxDuration', r[-1])
+
+    def test_ping_payload_and_fallback(self):
+        sent = []
+
+        class Resp:
+            def __init__(self, body):
+                self.body = body
+
+            def read(self, n=-1):
+                return self.body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_open(self, req, timeout=None):
+            sent.append((req.full_url, req.data))
+            if b'makeCall' in (req.data or b''):
+                return Resp(b'{"status":"OK","errorCode":"0","callId":"0510001111"}')
+            return Resp(b'{"status":"OK","errorCode":"0","billing":"0.15"}')
+        import urllib.request
+        orig = urllib.request.OpenerDirector.open
+        urllib.request.OpenerDirector.open = fake_open
+        try:
+            state, res = core.send_alert(self.cfg, 'noise', '0501112222')
+            self.assertEqual(state, 'sent')
+            self.assertIn(b'cid=1111', sent[-1][1])
+            state, res = core.send_alert(self.cfg, 'noise', '0501112222', mode='message')
+            self.assertIn('campaignApi', sent[-1][0])
+        finally:
+            urllib.request.OpenerDirector.open = orig
+
+    def test_callback_notice_then_menu(self):
+        self.start_room()
+        now = time.time()
+        self.ev('monitorStart', now=now)
+        self.ev('noise', now=now + 10, eventId='e1')
+        with self.con:
+            self.con.execute("UPDATE alerts SET state='sent'")
+        r = self.ivr('0501112222', 'p1', 'menu')
+        texts = ' '.join(f.get('text', '') for f in r[0]['files'])
+        self.assertIn('זוהה רעש', texts)
+        self.assertEqual(r[0]['name'], 'menu')
+        r = self.ivr('0501112222', 'p2', 'menu')  # heard once only
+        self.assertNotIn('זוהה רעש', ' '.join(f.get('text', '') for f in r[0]['files']))
+
+    def test_callback_after_disconnect_offers_reconnect(self):
+        self.start_room()
+        self.ev('monitorStart')
+        self.ev('disconnected', reason='hangup')
+        with self.con:
+            self.con.execute("UPDATE alerts SET state='sent'")
+        r = self.ivr('0501112222', 'p1', 'menu')
+        self.assertEqual(r[0]['name'], 'alm')
+        r = self.ivr('0501112222', 'p1', 'menu', alm='0')  # back to the main menu
+        self.assertEqual(r[0]['name'], 'menu')
+
+    def test_stop_alerts(self):
+        self.start_room()
+        self.ev('monitorStart')
+        r = self.ivr('0501112222', 'p1', 'menu')
+        r = self.ivr('0501112222', 'p1', 'menu', menu='8')
+        self.assertIn('הופסקה', r[0]['files'][0]['text'])
+        self.assertEqual(self.ev('noise', eventId='e9'), (200, 'muted'))
+
+    def test_prepaid_limits_and_charges(self):
+        with self.con:
+            store.add_credit(self.con, self.sid, 120, source='admin', amount=1.2)  # 1.20 = 120 minutes
+        sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (self.sid,)).fetchone()
+        self.assertEqual((sub['plan'], store.authorization(sub, DAY)[0]), ('prepaid', True))
+        r = self.start_room()
+        self.assertEqual(r[-1]['maxDuration'], 120 * 60 - 10)
+        now = time.time()
+        self.ev('monitorStart', now=now)
+        self.ev('disconnected', now=now + 61, reason='hangup')  # 2 started minutes
+        bal = self.con.execute('SELECT balance FROM subscribers WHERE id=?', (self.sid,)).fetchone()[0]
+        self.assertEqual(bal, 118)
+        with self.con:  # settling twice charges once
+            core.settle(self.cfg, self.con, 'c1', now + 500)
+        self.assertEqual(self.con.execute('SELECT balance FROM subscribers WHERE id=?', (self.sid,)).fetchone()[0], 118)
+
+    def test_prepaid_runs_out(self):
+        with self.con:
+            store.add_credit(self.con, self.sid, 2, source='admin', amount=0.02)
+        self.start_room()
+        now = time.time()
+        self.ev('monitorStart', now=now)
+        self.ev('disconnected', now=now + 115, reason='hangup')
+        kinds = [r[0] for r in self.con.execute('SELECT kind FROM alerts')]
+        self.assertEqual(kinds, ['balance'])
+        sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (self.sid,)).fetchone()
+        self.assertFalse(store.authorization(sub, DAY)[0])
+
+    def test_paid_message_alert_charges_cost(self):
+        with self.con:
+            store.add_credit(self.con, self.sid, 500, source='admin', amount=5)
+            self.con.execute("UPDATE subscribers SET alert_mode='message' WHERE id=?", (self.sid,))
+        self.start_room()
+        self.ev('monitorStart')
+        self.ev('noise', eventId='e1')
+        got = []
+
+        def fake(cfg, kind, phone, text=None, mode=None):
+            got.append(mode)
+            return 'sent', {'billing': '0.15'}
+        core.process_one(self.cfg, self.db, fake, log=lambda *a, **k: None)
+        self.assertEqual(got, ['message'])
+        self.assertEqual(self.con.execute('SELECT balance FROM subscribers WHERE id=?', (self.sid,)).fetchone()[0], 485)
+
+    def test_deposit_by_phone(self):
+        self.ivr('0521234567', 'd1', 'pay')
+        r = self.ivr('0521234567', 'd1', 'pay', pplan='3')
+        self.assertEqual(r[0]['name'], 'pdep')
+        r = self.ivr('0521234567', 'd1', 'pay', pplan='3', pdep='2')
+        cc = r[-1]
+        self.assertEqual((cc['type'], cc['sum'], cc['paymentsMode']), ('creditCard', 20.0, 'regular'))
+        self.assertIn('פיקדון', cc['category'])
+        self.ivr('0521234567', 'd1', 'pay', pplan='3', pdep='2', payment='OK', CONFIRM_payment='777')
+        sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (self.sid,)).fetchone()
+        self.assertEqual((sub['balance'], sub['plan']), (2000, 'prepaid'))
+        with self.con:  # the same charge from the Nedarim sync is not added twice
+            nedarim.apply_transactions(self.cfg, self.con, [{'TransactionId': '5', 'Amount': '20', 'Confirmation': '777',
+                                                              'Groupe': f'שמרטפון פיקדון {self.sid}'}], log=lambda *a, **k: None)
+        self.assertEqual(self.con.execute('SELECT balance FROM subscribers WHERE id=?', (self.sid,)).fetchone()[0], 2000)

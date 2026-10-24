@@ -239,6 +239,13 @@ def sub_page(cfg, con, sid, msg=None, err=None):
 <form class="row" method="post" action="/admin/sub/{sid}/action" style="margin-top:10px">{hidden(cfg)}
 <label>טלפון (אימות ידני על ידי המנהל)<input name="phone" inputmode="tel"></label>
 <button name="op" value="add_alert">אימות והוספה</button></form></div>
+<div class="card"><h3>פיקדון והתראות</h3><p>יתרת פיקדון: <b>{store.balance(s) / 100:.2f} ₪</b>
+· סוג התראות: <b>{E(store.ALERT_MODES.get(s['alert_mode'] or cfg.get('alert_mode') or 'message', ''))}</b>{'' if s['alert_mode'] else ' (ברירת מחדל)'}</p>
+<form class="row" method="post" action="/admin/sub/{sid}/action">{hidden(cfg)}
+<label>סכום לטעינה / החזר (₪, מינוס להורדה)<input name="credit" inputmode="decimal"></label>
+<button name="op" value="add_credit">עדכון יתרה</button>
+<label>סוג התראות<select name="alert_mode">{options({'': 'ברירת מחדל', **store.ALERT_MODES}, s['alert_mode'] or '')}</select></label>
+<button class="btn2" name="op" value="alert_mode">שמירת סוג</button></form></div>
 <div class="card"><h3>תשלומים</h3><p class="muted">גבייה: {E(billing)}{' · הוראת קבע ' + E(s['keva_id']) if s['keva_id'] else ''}</p>
 <div class="wrap"><table><tr><th>זמן</th><th>מסלול</th><th>סכום</th><th>מקור</th><th>אישור</th><th>בתוקף עד</th></tr>{py}</table></div></div>
 <div class="card"><h3>אירועי רעש אחרונים</h3><div class="wrap"><table><tr><th>זמן</th><th>משך</th><th>עוצמה</th><th></th></tr>{nz}</table></div></div>
@@ -427,6 +434,24 @@ def handle(cfg, con, method, path, query, headers, body, day):
                 elif op == 'delete':
                     store.delete_subscriber(con, sid)
                     return redirect('/admin')
+                elif op == 'add_credit':
+                    try:
+                        shekels = float((f.get('credit') or '').strip())
+                    except ValueError:
+                        raise ValueError('סכום לא תקין')
+                    if shekels > 0:
+                        store.add_credit(con, sid, round(shekels * 100), source='admin', amount=shekels,
+                                         note='טעינה ידנית')
+                    elif shekels < 0:
+                        con.execute('UPDATE subscribers SET balance=COALESCE(balance,0)+? WHERE id=?',
+                                    (round(shekels * 100), sid))
+                        store.audit(con, 'balance_adjust', {'id': sid, 'agorot': round(shekels * 100)})
+                elif op == 'alert_mode':
+                    m = f.get('alert_mode') or None
+                    if m and m not in store.ALERT_MODES:
+                        raise ValueError('סוג התראות לא תקין')
+                    con.execute('UPDATE subscribers SET alert_mode=? WHERE id=?', (m, sid))
+                    store.audit(con, 'alert_mode', {'id': sid, 'mode': m, 'by': 'admin'})
                 elif op == 'add_phone':
                     store.add_phone(con, sid, f.get('phone', ''), f.get('label', ''),
                                     int(cfg.get('max_extra_phones', 5)))

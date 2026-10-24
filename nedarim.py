@@ -86,6 +86,17 @@ def parse_date(s):
         return None
 
 
+def match_deposit(cfg, con, tx):
+    cat = re.escape((cfg.get('payments') or {}).get('category', 'שמרטפון'))
+    for field in ('Groupe', 'Comments'):
+        m = re.search(cat + r'\s*פיקדון\s*(\d+)', str(tx.get(field) or ''))
+        if m:
+            row = con.execute('SELECT id FROM subscribers WHERE id=?', (int(m.group(1)),)).fetchone()
+            if row:
+                return row['id']
+    return None
+
+
 def match_subscriber(cfg, con, tx):
     cat = re.escape((cfg.get('payments') or {}).get('category', 'שמרטפון'))
     for field in ('Groupe', 'Comments'):
@@ -119,6 +130,13 @@ def apply_transactions(cfg, con, rows, log=print):
             continue
         if amount <= 0 or not tx.get('Confirmation'):
             continue  # cancelled, refund or temporary transaction
+        dep = match_deposit(cfg, con, tx)
+        if dep:
+            if store.add_credit(con, dep, round(amount * 100), source='nedarim', amount=amount,
+                                confirm=str(tx.get('Confirmation')), transaction_id=str(tid)) is not None:
+                applied += 1
+                log('DEPOSIT', dep, amount, flush=True)
+            continue
         sid = match_subscriber(cfg, con, tx)
         if not sid:
             continue

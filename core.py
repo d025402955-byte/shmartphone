@@ -1,6 +1,7 @@
 """Call flow (Technoline Module API), monitor events and alert calls (Campaign API)."""
 import json
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -10,6 +11,7 @@ DEFAULT_TEXTS = {
     'alert_noise': 'שמרטפון. זוהה רעש בחדר התינוק.',
     'alert_disconnected': 'שמרטפון. הקו בחדר התינוק התנתק.',
     'alert_reconnect': '',  # not spoken: the answered call goes into the monitoring extension
+    'alert_balance': 'שמרטפון. יתרת הפיקדון נגמרה והניטור הסתיים.',
 }
 
 
@@ -20,7 +22,7 @@ def text(cfg, key, **kw):
 
 # ---------- monitor events ----------
 
-ALERT_KINDS = ('noise', 'disconnected')
+ALERT_KINDS = ('noise', 'disconnected', 'balance')
 
 
 def _num(v, cast=float):
@@ -62,17 +64,22 @@ def handle_event(cfg, con, ev, header_event, now=None):
     if not sess or sess['room_id'] != ev.get('roomId'):
         return 404, 'unknown session'
     if kind == 'monitorStart':
-        con.execute("UPDATE sessions SET status='monitoring' WHERE call_id=?", (call_id,))
+        con.execute("UPDATE sessions SET status='monitoring', mon_start=COALESCE(mon_start,?) WHERE call_id=?",
+                    (now, call_id))
     if kind in ('noise', 'noiseEnd') and ev.get('eventId'):
         record_noise(con, sess, ev, now)
     delay = None
     if kind == 'disconnected':
         con.execute('UPDATE sessions SET ended=COALESCE(ended,?), status=? WHERE call_id=?',
                     (now, 'disconnected ' + str(ev.get('reason', '')), call_id))
-        if not cfg.get('alert_on_disconnect', True):
+        if settle(cfg, con, call_id, now) == 'empty':
+            kind = 'balance'  # the deposit ran out: say so instead of 'disconnected'
+        if not cfg.get('alert_on_disconnect', True) and kind == 'disconnected':
             return 200, 'ok'
     if kind not in ALERT_KINDS:
         return 200, 'ok'
+    if not sess['alert_phone']:
+        return 200, 'muted'  # the parent stopped alerts from this room
     key = f"{kind}:{ev.get('eventId') or call_id}"
     if con.execute('SELECT 1 FROM alerts WHERE unique_key=?', (key,)).fetchone():
         return 200, 'duplicate'
@@ -87,6 +94,24 @@ def handle_event(cfg, con, ev, header_event, now=None):
                 (key, sess['subscriber_id'], call_id, kind, sess['alert_phone'], now, state,
                  json.dumps({'note': 'cooldown'}) if recent else None, delay))
     return 200, 'queued' if state == 'pending' else 'cooldown'
+
+
+def settle(cfg, con, call_id, now=None):
+    """Charge a finished prepaid session; when the deposit is used up, queue one 'balance' alert.
+    Returns 'empty' when the balance is exhausted, else ''."""
+    per_minute = max(1, int((cfg.get('payments') or {}).get('per_minute_agorot', 1)))
+    store.settle_session(con, call_id, per_minute, now)
+    s = con.execute('SELECT * FROM sessions WHERE call_id=?', (call_id,)).fetchone()
+    if not s or not s['subscriber_id'] or not s['mon_start']:
+        return ''
+    sub = con.execute('SELECT * FROM subscribers WHERE id=?', (s['subscriber_id'],)).fetchone()
+    if not sub or sub['plan'] != 'prepaid' or store.balance(sub) >= per_minute:
+        return ''
+    if s['alert_phone']:
+        con.execute('INSERT OR IGNORE INTO alerts(unique_key,subscriber_id,call_id,kind,alert_phone,created,state) '
+                    'VALUES(?,?,?,?,?,?,?)', (f'balance:{call_id}', sub['id'], call_id, 'balance', s['alert_phone'],
+                                              now or time.time(), 'pending'))
+    return 'empty'
 
 
 def queue_reconnect(cfg, con, sub_id, room_phone, prev_call_id, requested_by, now=None):
@@ -128,7 +153,50 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def send_alert(cfg, kind, phone, override_text=None):
+PING_CODES = {'noise': '1111', 'disconnected': '2222', 'balance': '3333'}
+VOICE_TEXTS = {'noise': 'שמרטפון. זוהה רעש בחדר התינוק. קוד {code}',
+               'disconnected': 'שמרטפון. הקו בחדר התינוק התנתק. קוד {code}',
+               'balance': 'שמרטפון. יתרת הפיקדון נגמרה והניטור הסתיים. קוד {code}'}
+
+
+def send_ping(cfg, kind, phone):
+    """Alert by makeCall: 'ping' rings and drops (caller ID 0510 + code tells the kind); 'voice' reads a short
+    free message. The parent calls the line back to hear details. Needs the server IP approved at Technoline."""
+    mode = cfg.get('alert_mode', 'ping')
+    code = str((cfg.get('ping_codes') or {}).get(kind) or PING_CODES.get(kind, '9999'))
+    params = {'action': 'makeCall', 'phone': phone, 'cid': code}
+    if cfg.get('ping_caller_id'):
+        params['callerId'] = str(cfg['ping_caller_id'])
+    if mode == 'voice':
+        params.update({'mode': 'voice', 'apiKey': cfg['api_key'],
+                       'voiceText': ((cfg.get('voice_texts') or {}).get(kind) or VOICE_TEXTS.get(kind, ''))[:200]})
+    url = cfg.get('files_url', 'https://api.tlivr.com/ivrFilesApi.php')
+    req = urllib.request.Request(url, data=urllib.parse.urlencode(params).encode(),
+                                 headers={'User-Agent': 'curl/8.5.0'}, method='POST')
+    try:
+        with urllib.request.build_opener(_NoRedirect()).open(req, timeout=15) as resp:
+            result = json.loads(resp.read(65536) or b'{}')
+    except urllib.error.HTTPError as e:
+        return 'failed', {'note': f'makeCall HTTP {e.code}' + (' (server IP not approved)' if e.code == 403 else '')}
+    if str(result.get('status', '')).upper() != 'OK' or str(result.get('errorCode')) != '0':
+        return 'failed', {'errorCode': result.get('errorCode'), 'note': str(result.get('note') or '')[:300]}
+    return 'sent', {'via': mode, 'callId': result.get('callId'), 'campaignId': result.get('campaignId')}
+
+
+def send_alert(cfg, kind, phone, override_text=None, mode=None):
+    """Deliver one alert. mode: ping / voice (free makeCall) or message (paid campaign call).
+    Returns (state, result_dict). Raises on transport errors."""
+    mode = mode or cfg.get('alert_mode') or 'message'
+    if kind in PING_CODES and mode in ('ping', 'voice') and not cfg.get('demo'):
+        state, result = send_ping({**cfg, 'alert_mode': mode}, kind, phone)
+        if state == 'sent':
+            return state, result
+        fallback = send_campaign(cfg, kind, phone, override_text)  # never lose an alert
+        return fallback[0], {**fallback[1], 'ping_failed': result}
+    return send_campaign(cfg, kind, phone, override_text)
+
+
+def send_campaign(cfg, kind, phone, override_text=None):
     """Call the Campaign API. Returns (state, result_dict). Raises on transport errors."""
     url = cfg.get('campaign_url', 'https://api.tlivr.com/campaignApi.php')
     payload = campaign_payload(cfg, kind, phone, override_text)
@@ -172,9 +240,12 @@ def process_one(cfg, db_path, sender=send_alert, log=print):
         state, result = 'failed', {'note': 'no alert phone'}
     else:
         payload = json.loads(row['payload']) if row['payload'] else {}
+        mode = alert_mode_for(cfg, db_path, row['subscriber_id'])
         try:
             if payload.get('text') and row['kind'] != 'reconnect':
                 state, result = sender(cfg, row['kind'], row['alert_phone'], payload['text'])
+            elif mode:
+                state, result = sender(cfg, row['kind'], row['alert_phone'], mode=mode)
             else:
                 state, result = sender(cfg, row['kind'], row['alert_phone'])
         except Exception as e:  # the provider may have accepted it; never retry blindly
@@ -186,8 +257,27 @@ def process_one(cfg, db_path, sender=send_alert, log=print):
     with con:
         con.execute('UPDATE alerts SET state=?, result=? WHERE id=?',
                     (state, json.dumps(result, ensure_ascii=False), row['id']))
+        if mode == 'message' and state == 'sent' and row['kind'] in PING_CODES:
+            store.charge_alert(con, row['subscriber_id'], result.get('billing'), row['id'])
     con.close()
     return True
+
+
+def alert_mode_for(cfg, db_path, sid):
+    """ping / voice / message for this subscriber. Paid messages need a positive deposit balance."""
+    if not sid:
+        return None
+    con = store.connect(db_path)
+    try:
+        sub = con.execute('SELECT * FROM subscribers WHERE id=?', (sid,)).fetchone()
+    finally:
+        con.close()
+    if not sub:
+        return None
+    mode = sub['alert_mode'] or cfg.get('alert_mode') or 'message'
+    if mode == 'message' and sub['alert_mode'] == 'message' and store.balance(sub) <= 0:
+        return cfg.get('free_alert_mode', 'ping') if cfg.get('alert_mode') in ('ping', 'voice') else 'message'
+    return mode
 
 
 # ---------- customer-service messages -> email ----------

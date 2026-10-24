@@ -238,6 +238,21 @@ def set_voice():
     run('systemctl', 'restart', SERVICE)
 
 
+def set_alerts():
+    """install.py alerts ping|voice|message [offer-voice]  default alert type for subscribers who did not choose."""
+    mode = (sys.argv[2] if len(sys.argv) > 2 else '').strip().lower()
+    if mode not in ('ping', 'voice', 'message'):
+        print('usage: install.py alerts ping|voice|message')
+        return
+    with open(NEW_CFG, encoding='utf-8') as f:
+        cfg = json.load(f)
+    cfg['alert_mode'] = mode
+    cfg['voice_alerts_offer'] = 'offer-voice' in sys.argv[3:]
+    write_config(cfg, service_user())
+    run('systemctl', 'restart', SERVICE)
+    print('alerts:', mode, '(voice offered)' if cfg['voice_alerts_offer'] else '')
+
+
 def set_payments():
     """Turn on payments by phone (Technoline creditCard -> Nedarim Plus) and the renewal sync."""
     with open(NEW_CFG, encoding='utf-8') as f:
@@ -313,5 +328,5 @@ if __name__ == '__main__':
     if os.geteuid() != 0:
         sys.exit('run as root')
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'install'
-    {'install': install, 'password': set_password, 'rollback': rollback, 'smtp': set_smtp, 'voice': set_voice, 'payments': set_payments, 'reconnect': set_reconnect,
+    {'install': install, 'password': set_password, 'rollback': rollback, 'smtp': set_smtp, 'voice': set_voice, 'alerts': set_alerts, 'payments': set_payments, 'reconnect': set_reconnect,
      'status': lambda: print(run('systemctl', 'status', SERVICE, '--no-pager', check=False))}[cmd]()

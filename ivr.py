@@ -25,9 +25,9 @@ import time
 
 import store
 
-MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history', 'pay', 'reconnect', 'alert')
+MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history', 'pay', 'reconnect', 'alert', 'stop')
 MENU_KEYS = {'1': 'activate', '2': 'listen', '3': 'info', '4': 'phones', '5': 'verify', '6': 'account',
-             '7': 'history', '9': 'message'}
+             '7': 'history', '8': 'stop', '9': 'message'}
 HEB_MONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר',
               'נובמבר', 'דצמבר']
 VERIFY_TTL = 30 * 60
@@ -38,6 +38,7 @@ TEXTS = {
             'להסבר ולהוראות הפעלה, הקישו 3. להוספת טלפונים מורשים, הקישו 4. '
             'לאימות מספר טלפון לקבלת התראות, הקישו 5. לניהול חשבון המנוי, הקישו 6. '
             'לשמיעת הרעשים שזוהו לאחרונה, הקישו 7. '
+            'להפסקת קבלת ההתראות מחדר פעיל, הקישו 8. '
             'להשארת הודעה לשירות הלקוחות, הקישו 9.',
     'info': 'שמרטפון הוא שירות שמאפשר לכם לצאת מהבית בשקט, כשהילדים ישנים. '
             'משאירים בחדר טלפון, מתקשרים ממנו למערכת, ומקישים 1 להפעלת השמרטפון. '
@@ -63,6 +64,29 @@ TEXTS = {
     'pick_press': 'הקישו',
     'pick_new': 'לאימות מספר חדש הקישו 9.',
     'starting': 'הניטור מתחיל. אפשר להניח את הטלפון בחדר.',
+    'starting_to': 'הניטור מתחיל. ההתראות יישלחו לטלפון',
+    'starting_place': 'אפשר להניח את הטלפון בחדר.',
+    'notice_noise_one': 'בשעה {hh} זוהה רעש בחדר התינוק.',
+    'notice_noise_many': 'מאז {first} זוהו {n} רעשים בחדר התינוק. האחרון בשעה {hh}.',
+    'notice_disc': 'בשעה {hh} השיחה מהטלפון שבחדר התינוק נותקה.',
+    'notice_balance': 'בשעה {hh} יתרת הפיקדון נגמרה, והניטור הסתיים.',
+    'notice_history': 'לשמיעת הרעשים הקישו 7 בתפריט.',
+    'al_keys_menu': 'לחיוג לטלפון שבחדר וחידוש הניטור הקישו 1. לתפריט הראשי הקישו 0.',
+    'stop_none': 'אין כרגע ניטור פעיל ששולח אליכם התראות.',
+    'stop_done': 'קבלת ההתראות מהטלפון שבחדר הופסקה. השיחה בחדר תמשיך עד שינתקו אותה שם.',
+    'stop_pick': 'להפסקת ההתראות מהטלפון',
+    'balance_left': 'יתרת הפיקדון שלכם {amount} שקלים, מספיקה לכ-{time} ניטור.',
+    'no_balance': 'יתרת הפיקדון שלכם נגמרה.',
+    'deposit_menu': 'לטעינת פיקדון של {a1} שקלים הקישו 1. של {a2} שקלים הקישו 2. של {a3} שקלים הקישו 3. לחזרה הקישו 0.',
+    'pay_deposit': 'לפיקדון לפי שימוש, {price} לכל דקת ניטור, הקישו 3.',
+    'pay_ok_deposit': 'תודה. הפיקדון נטען. יתרתכם עכשיו {amount} שקלים, מספיקה לכ-{time} ניטור.',
+    'account_balance': 'יתרת הפיקדון: {amount} שקלים.',
+    'account_alerts': 'לבחירת סוג ההתראות הקישו 6.',
+    'alerts_menu': 'סוג ההתראות כרגע: {mode}. לצינתוק חינם, ואחריו מתקשרים לשמוע מה קרה, הקישו 1. '
+                   'להודעה קולית מלאה, בתשלום לפי עלות השיחה מתוך הפיקדון, הקישו 2. לחזרה הקישו 0.',
+    'alerts_voice_opt': 'להודעה קצרה חינם הקישו 3.',
+    'alerts_saved': 'סוג ההתראות עודכן.',
+    'alerts_need_balance': 'הודעות בתשלום דורשות פיקדון עם יתרה. אפשר לטעון פיקדון בניהול החשבון, מקש 5.',
     'busy': 'כבר פועל ניטור מהטלפון הזה.',
     'error': 'אירעה תקלה. נסו שוב מאוחר יותר.',
     'bad_key': 'הבחירה אינה תקינה.',
@@ -251,7 +275,8 @@ class Call:
             'his_sub': ('hsub', self.on_history_sub), 'pay_plan': ('pplan', self.on_pay_plan),
             'paying': ('payment', self.on_payment), 'rc_pick': ('rcon', self.on_reconnect),
             'al_menu': ('alm', self.on_alert_menu), 'rc_wait': ('rcw', self.on_reconnect_wait),
-            'rc_done': ('rcd', self.on_reconnect_done),
+            'rc_done': ('rcd', self.on_reconnect_done), 'stop_pick': ('stp', self.on_stop_pick),
+            'al_mode': ('alt', self.on_alert_mode), 'pay_dep': ('pdep', self.on_deposit_pick),
         }
         if step in handlers and handlers[step][0] in p:
             return handlers[step][1](p[handlers[step][0]])
@@ -263,7 +288,7 @@ class Call:
         return {'menu': self.menu, 'activate': self.activate, 'listen': self.listen, 'info': self.info,
                 'phones': self.phones, 'verify': self.verify, 'account': self.account,
                 'message': self.message, 'history': self.history,
-                'pay': self.pay_menu, 'reconnect': self.reconnect,
+                'pay': self.pay_menu, 'reconnect': self.reconnect, 'stop': self.stop_alerts,
                 'alert': self.disconnect_alert}.get(mode, self.activate)()
 
     def on_hangup(self):
@@ -271,13 +296,96 @@ class Call:
             if self.sess['step'] == 'recording' and self.p.get('FILEID_rec') and not self.data.get('saved'):
                 self.store_message()
             self.con.execute("UPDATE sessions SET ended=COALESCE(ended,?) WHERE call_id=?", (self.now, self.call_id))
+            if self.sess['mon_start']:
+                import core
+                core.settle(self.cfg, self.con, self.call_id, self.now)
+                self.wake = True
         return []
 
     # ----- menu -----
-    def menu(self):
+    def menu(self, prefix=None, notices=True):
+        if notices:
+            offer = self.alert_notices()
+            if offer:
+                return offer
         self.save('menu')
+        files = [{'text': x} for x in ([prefix] if isinstance(prefix, str) else (prefix or [])) if x]
         return [{'type': 'simpleMenu', 'name': 'menu', 'enabledKeys': ','.join(MENU_KEYS), 'times': 3,
-                 'timeout': 7, 'errorReturn': 'ERROR', 'files': [{'text': t(self.cfg, 'menu')}]}]
+                 'timeout': 7, 'errorReturn': 'ERROR', 'files': files + [{'text': t(self.cfg, 'menu')}]}]
+
+    # ----- what happened since the last alert (the parent calls back after a ring-and-drop) -----
+    def hhmm(self, ts):
+        import zoneinfo
+        tz = zoneinfo.ZoneInfo(self.cfg.get('timezone', 'Asia/Jerusalem'))
+        return datetime.datetime.fromtimestamp(ts, tz).strftime('%H:%M')
+
+    def alert_notices(self):
+        rows = self.con.execute(
+            "SELECT * FROM alerts WHERE alert_phone=? AND kind IN ('noise','disconnected','balance') AND heard IS NULL "
+            "AND state IN ('sent','demo','unknown','skipped','sending') AND created>? ORDER BY id",
+            (self.phone, self.now - float(self.cfg.get('notice_hours', 6)) * 3600)).fetchall()
+        if not rows:
+            return None
+        self.con.execute(f"UPDATE alerts SET heard=? WHERE id IN ({','.join('?' * len(rows))})",
+                         (self.now, *[r['id'] for r in rows]))
+        noise = [r for r in rows if r['kind'] == 'noise']
+        parts = []
+        if len(noise) == 1:
+            parts.append(t(self.cfg, 'notice_noise_one', hh=self.hhmm(noise[0]['created'])))
+        elif noise:
+            parts.append(t(self.cfg, 'notice_noise_many', n=len(noise), first=self.hhmm(noise[0]['created']),
+                           hh=self.hhmm(noise[-1]['created'])))
+        last = rows[-1]
+        for r in rows:
+            if r['kind'] in ('disconnected', 'balance'):
+                parts.append(t(self.cfg, 'notice_' + ('disc' if r['kind'] == 'disconnected' else 'balance'),
+                               hh=self.hhmm(r['created'])))
+        if noise:
+            parts.append(t(self.cfg, 'notice_history'))
+        if last['kind'] == 'disconnected' and self.cfg.get('reconnect_extension'):
+            prev = self.con.execute('SELECT * FROM sessions WHERE call_id=?', (last['call_id'],)).fetchone()
+            live = prev and self.con.execute("SELECT 1 FROM sessions WHERE subscriber_id=? AND status='monitoring' "
+                                             "AND ended IS NULL AND started>?",
+                                             (prev['subscriber_id'], prev['started'] or 0)).fetchone()
+            if prev and not live:
+                self.data['al'] = [last['subscriber_id'], prev['call_id'], prev['phone']]
+                self.data['al_from_menu'] = True
+                self.save('al_menu')
+                return [{'type': 'simpleMenu', 'name': 'alm', 'enabledKeys': '0,1', 'times': 2, 'timeout': 8,
+                         'errorReturn': 'ERROR',
+                         'files': [{'text': x} for x in parts + [t(self.cfg, 'al_keys_menu')]]}]
+        return self.menu(parts, notices=False)
+
+    # ----- 8: stop alerts from a running room -----
+    def live_rooms_to_me(self):
+        return self.con.execute("SELECT * FROM sessions WHERE alert_phone=? AND status='monitoring' AND ended IS NULL "
+                                "AND started>? ORDER BY started DESC LIMIT 8",
+                                (self.phone, self.now - 12 * 3600)).fetchall()
+
+    def stop_alerts(self):
+        rooms = self.live_rooms_to_me()
+        if not rooms:
+            return self.menu(t(self.cfg, 'stop_none'), notices=False)
+        if len(rooms) == 1:
+            return self.do_stop(rooms[0]['call_id'])
+        self.data['stop'] = [r['call_id'] for r in rooms]
+        self.save('stop_pick')
+        files = []
+        for i, r in enumerate(rooms, 1):
+            files += [t(self.cfg, 'stop_pick'), {'digits': r['phone']}, t(self.cfg, 'pick_press'), {'number': str(i)}]
+        return [ask('stp', files)]
+
+    def on_stop_pick(self, key):
+        calls = self.data.get('stop', [])
+        if key.isdigit() and 1 <= int(key) <= len(calls):
+            return self.do_stop(calls[int(key) - 1])
+        return self.menu(notices=False)
+
+    def do_stop(self, call_id):
+        self.con.execute('UPDATE sessions SET alert_phone=NULL WHERE call_id=? AND alert_phone=?', (call_id, self.phone))
+        store.audit(self.con, 'stop_alerts', {'call': call_id, 'by': self.phone})
+        self.save(None)
+        return hangup(self.cfg, t(self.cfg, 'stop_done'))
 
     def on_menu(self, key):
         mode = MENU_KEYS.get(key)
@@ -345,11 +453,31 @@ class Call:
                   'maxClip': 120, 'cooldown': 0, 'maxListeners': 1, 'joinBeep': 'yes'}
         params.update(self.cfg.get('monitor', {}))
         cmd.update(params)
-        return [say(t(self.cfg, 'starting')), cmd]
+        intro = []
+        if sub['plan'] == 'prepaid':
+            minutes = store.balance(sub) // self.per_minute()
+            cmd['maxDuration'] = max(50, minutes * 60 - 10)
+            intro.append(t(self.cfg, 'balance_left', amount=self.money(store.balance(sub) / 100),
+                           time=self.say_minutes(minutes)))
+        return [say(*intro, t(self.cfg, 'starting_to'), {'digits': alert_phone}, t(self.cfg, 'starting_place')), cmd]
+
+    def per_minute(self):
+        return max(1, int((self.cfg.get('payments') or {}).get('per_minute_agorot', 1)))
+
+    @staticmethod
+    def say_minutes(minutes):
+        if minutes < 120:
+            return f'{minutes} דקות'
+        h = minutes // 60
+        return f'{h} שעות' if h < 48 else f'{h // 24} ימים'
 
     def on_monitor_result(self, status):
         self.con.execute('UPDATE sessions SET ended=?, status=?, step=NULL WHERE call_id=?',
                          (self.now, status, self.call_id))
+        import core
+        core.settle(self.cfg, self.con, self.call_id, self.now)
+        if status == 'TIMEOUT':
+            self.wake = True
         if status == 'BUSY':
             return hangup(self.cfg, t(self.cfg, 'busy'))
         if status in ('TIMEOUT', 'HANGUP'):
@@ -596,6 +724,8 @@ class Call:
 
     def on_alert_menu(self, key):
         if key != '1':
+            if self.data.pop('al_from_menu', None):
+                return self.menu(notices=False)
             return hangup(self.cfg, t(self.cfg, 'goodbye'))
         sid, prev_call, room_phone = self.data.get('al', [None, None, None])
         sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sid,)).fetchone()
@@ -821,7 +951,8 @@ class Call:
             return err
         self.save('acc_menu')
         return [ask('acm', [prefix, t(self.cfg, 'account_menu'),
-                            t(self.cfg, 'account_pay') if self.payments_on() else None])]
+                            t(self.cfg, 'account_pay') if self.payments_on() else None,
+                            t(self.cfg, 'account_alerts')])]
 
     # ----- payments (Technoline creditCard module -> Nedarim Plus) -----
     def payments_on(self):
@@ -844,12 +975,48 @@ class Call:
         self.reset_tries()
         self.save('pay_plan')
         return [ask('pplan', [prefix, t(self.cfg, 'pay_menu', monthly=self.money(monthly),
-                                         annual=self.money(annual))], timeout=8)]
+                                         annual=self.money(annual)),
+                              t(self.cfg, 'pay_deposit', price=self.price_words()) if self.deposits() else None],
+                    timeout=8)]
+
+    def deposits(self):
+        d = (self.cfg.get('payments') or {}).get('deposits', [10, 20, 50])
+        return [float(x) for x in d][:3] if d else []
+
+    def price_words(self):
+        a = self.per_minute()
+        return 'אגורה אחת' if a == 1 else f'{a} אגורות'
+
+    def deposit_menu(self, prefix=None):
+        d = self.deposits()
+        self.save('pay_dep')
+        return [ask('pdep', [prefix, t(self.cfg, 'deposit_menu', a1=self.money(d[0]), a2=self.money(d[1]),
+                                       a3=self.money(d[2]))], timeout=8)]
+
+    def on_deposit_pick(self, key):
+        sub, _, err = self.subscriber(auto_trial=True, allow_inactive=True)
+        if err:
+            return err
+        d = self.deposits()
+        if not (key.isdigit() and 1 <= int(key) <= len(d)):
+            return self.pay_menu(sub)
+        amount = d[int(key) - 1]
+        p = self.cfg.get('payments') or {}
+        cmd = {'type': 'creditCard', 'name': 'payment', 'cvv': 'yes', 'tz': 'yes', 'payments': 1,
+               'sum': amount, 'paymentsMode': 'regular',
+               'category': f"{p.get('category', 'שמרטפון')} פיקדון {sub['id']}"}
+        if p.get('terminal'):
+            cmd['terminal'] = str(p['terminal'])
+        self.data['pay'] = ['deposit', amount]
+        self.save('paying')
+        return [say(t(self.cfg, 'pay_card_intro')), cmd]
 
     def on_pay_plan(self, key):
         sub, _, err = self.subscriber(auto_trial=True, allow_inactive=True)
         if err:
             return err
+        if key == '3' and self.deposits():
+            return self.deposit_menu()
         if key not in ('1', '2'):
             if key != '0' and self.retry():
                 return self.pay_menu(sub, t(self.cfg, 'bad_key'))
@@ -881,6 +1048,13 @@ class Call:
         if status != 'OK':
             store.audit(self.con, 'payment_failed', {'id': sub['id'], 'plan': plan, 'status': status[:40]})
             return hangup(self.cfg, t(self.cfg, 'pay_failed'))
+        if plan == 'deposit':
+            store.add_credit(self.con, sub['id'], round(float(amount) * 100), source='phone', amount=amount,
+                             confirm=confirm)
+            sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
+            bal = store.balance(sub)
+            return hangup(self.cfg, t(self.cfg, 'pay_ok_deposit', amount=self.money(bal / 100),
+                                      time=self.say_minutes(bal // self.per_minute())), t(self.cfg, 'pay_next'))
         months = 12 if plan == 'annual' else 1
         new = store.record_payment(self.con, sub['id'], source='phone', months=months, amount=amount,
                                    confirm=confirm, day=self.day)
@@ -895,8 +1069,10 @@ class Call:
         if key == '1':
             parts = [t(self.cfg, 'account_status', status=store.STATUSES.get(sub['status'], ''),
                        plan=store.PLANS.get(sub['plan'], ''))]
-            if sub['expires'] and sub['plan'] != 'free':
+            if sub['expires'] and sub['plan'] not in ('free', 'prepaid'):
                 parts.append(t(self.cfg, 'account_until', date=say_date(sub['expires'])))
+            if sub['plan'] == 'prepaid' or store.balance(sub):
+                parts.append(t(self.cfg, 'account_balance', amount=self.money(store.balance(sub) / 100)))
             return [say(*parts)] + self.account()
         if key == '2':
             ver = store.verified_phones(self.con, sub['id'])
@@ -920,7 +1096,30 @@ class Call:
             return self.ask_verify_number(sub, [])
         if key == '5' and self.payments_on():
             return self.pay_menu(sub)
+        if key == '6':
+            return self.alert_mode_menu(sub)
         return hangup(self.cfg, t(self.cfg, 'goodbye'))
+
+    def alert_mode_menu(self, sub, prefix=None):
+        mode = sub['alert_mode'] or self.cfg.get('alert_mode') or 'message'
+        self.save('al_mode')
+        return [ask('alt', [prefix, t(self.cfg, 'alerts_menu', mode=store.ALERT_MODES.get(mode, '')),
+                            t(self.cfg, 'alerts_voice_opt') if self.cfg.get('voice_alerts_offer') else None])]
+
+    def on_alert_mode(self, key):
+        sub, _, err = self.subscriber(allow_inactive=True)
+        if err:
+            return err
+        modes = {'1': 'ping', '2': 'message'}
+        if self.cfg.get('voice_alerts_offer'):
+            modes['3'] = 'voice'
+        if key not in modes:
+            return self.account()
+        if modes[key] == 'message' and store.balance(sub) <= 0:
+            return self.account(t(self.cfg, 'alerts_need_balance'))
+        self.con.execute('UPDATE subscribers SET alert_mode=?, updated=? WHERE id=?', (modes[key], self.now, sub['id']))
+        store.audit(self.con, 'alert_mode', {'id': sub['id'], 'mode': modes[key]})
+        return self.account(t(self.cfg, 'alerts_saved'))
 
     def on_account_rm(self, key):
         sub, _, err = self.subscriber(allow_inactive=True)

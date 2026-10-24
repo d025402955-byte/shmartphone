@@ -120,14 +120,14 @@ CREATE INDEX IF NOT EXISTS messages_state ON messages(state);
 """
 
 MIGRATIONS = {
-    'sessions': [('step', 'TEXT'), ('mode', 'TEXT'), ('data', 'TEXT')],
-    'alerts': [('payload', 'TEXT'), ('not_before', 'REAL')],
-    'subscribers': [('billing', 'TEXT'), ('keva_id', 'TEXT')],
+    'sessions': [('step', 'TEXT'), ('mode', 'TEXT'), ('data', 'TEXT'), ('mon_start', 'REAL'), ('charged', 'INTEGER')],
+    'alerts': [('payload', 'TEXT'), ('not_before', 'REAL'), ('heard', 'REAL'), ('charged', 'INTEGER')],
+    'subscribers': [('billing', 'TEXT'), ('keva_id', 'TEXT'), ('balance', 'INTEGER'), ('alert_mode', 'TEXT')],
 }
 
 GRACE_DAYS = 5  # a paid subscription keeps working this many days after its paid-until date
 
-PLANS = {'monthly': 'חודשי', 'annual': 'שנתי', 'free': 'חינם', 'trial': 'ניסיון'}
+PLANS = {'monthly': 'חודשי', 'annual': 'שנתי', 'prepaid': 'פיקדון', 'free': 'חינם', 'trial': 'ניסיון'}
 STATUSES = {'active': 'פעיל', 'trial': 'תקופת ניסיון', 'disabled': 'מושבת', 'cancelled': 'מבוטל'}
 
 
@@ -264,6 +264,8 @@ def authorization(sub, day, enforce_active_expiry=False):
         if exp and exp >= day.isoformat():
             return True, ''
         return False, 'trial_expired'
+    if status == 'active' and sub['plan'] == 'prepaid':
+        return balance(sub) > 0, 'no_balance'
     if status == 'active':
         if sub['plan'] == 'free' or not exp:
             return True, ''
@@ -297,6 +299,74 @@ def record_payment(con, sid, *, source, months, amount, confirm=None, transactio
                 'VALUES(?,?,?,?,?,?,?,?,?)',
                 (sid, source, plan, amount, confirm, transaction_id, keva_id, new.isoformat(), time.time()))
     return new
+
+
+# ---------- prepaid deposit (balance in agorot) ----------
+
+def balance(sub):
+    return int(sub['balance'] or 0) if 'balance' in sub.keys() else 0
+
+
+def add_credit(con, sid, agorot, *, source, amount, confirm=None, transaction_id=None, note=''):
+    """Add to a subscriber's deposit and switch them to the prepaid plan.
+
+    Idempotent per transaction / confirmation (phone result + Nedarim sync). Returns the new balance or None."""
+    agorot = int(agorot)
+    if transaction_id and con.execute('SELECT 1 FROM payments WHERE transaction_id=?', (transaction_id,)).fetchone():
+        return None
+    if confirm:
+        row = con.execute('SELECT * FROM payments WHERE confirm=? AND subscriber_id=?', (confirm, sid)).fetchone()
+        if row:
+            con.execute('UPDATE payments SET transaction_id=COALESCE(transaction_id,?) WHERE id=?',
+                        (transaction_id, row['id']))
+            return None
+    con.execute("UPDATE subscribers SET balance=COALESCE(balance,0)+?, plan='prepaid', status='active', "
+                "billing=COALESCE(billing,?), updated=? WHERE id=?",
+                (agorot, 'nedarim' if source != 'admin' else 'admin', time.time(), sid))
+    con.execute('INSERT INTO payments(subscriber_id,source,plan,amount,confirm,transaction_id,created) '
+                'VALUES(?,?,?,?,?,?,?)', (sid, source, 'deposit', amount, confirm, transaction_id, time.time()))
+    new = con.execute('SELECT balance FROM subscribers WHERE id=?', (sid,)).fetchone()[0]
+    audit(con, 'deposit', {'id': sid, 'agorot': agorot, 'source': source, 'balance': new, 'note': note})
+    return new
+
+
+ALERT_MODES = {'ping': 'צינתוק חינם', 'voice': 'הודעה קצרה חינם', 'message': 'הודעה קולית בתשלום'}
+
+
+def charge_alert(con, sid, billing, alert_id):
+    """Pass Technoline's cost of a paid alert call on to the subscriber's deposit (once per alert)."""
+    try:
+        agorot = int(round(float(billing) * 100))
+    except (TypeError, ValueError):
+        return 0
+    if agorot <= 0 or not sid:
+        return 0
+    cur = con.execute('UPDATE alerts SET charged=? WHERE id=? AND charged IS NULL', (agorot, alert_id))
+    if not cur.rowcount:
+        return 0
+    con.execute('UPDATE subscribers SET balance=COALESCE(balance,0)-? WHERE id=?', (agorot, sid))
+    audit(con, 'alert_charge', {'id': sid, 'alert': alert_id, 'agorot': agorot})
+    return agorot
+
+
+def settle_session(con, call_id, per_minute, now=None):
+    """Charge a finished monitoring session to a prepaid deposit, once. Returns agorot charged."""
+    now = now or time.time()
+    s = con.execute('SELECT * FROM sessions WHERE call_id=?', (call_id,)).fetchone()
+    if not s or s['charged'] is not None or not s['mon_start'] or not s['subscriber_id']:
+        return 0
+    sub = con.execute('SELECT * FROM subscribers WHERE id=?', (s['subscriber_id'],)).fetchone()
+    if not sub or sub['plan'] != 'prepaid':
+        con.execute('UPDATE sessions SET charged=0 WHERE call_id=?', (call_id,))
+        return 0
+    seconds = max(0.0, (s['ended'] or now) - s['mon_start'])
+    minutes = int(-(-seconds // 60))  # every started minute
+    cost = minutes * int(per_minute)
+    con.execute('UPDATE sessions SET charged=? WHERE call_id=?', (cost, call_id))
+    con.execute('UPDATE subscribers SET balance=COALESCE(balance,0)-? WHERE id=?', (cost, sub['id']))
+    audit(con, 'usage', {'id': sub['id'], 'call': call_id, 'minutes': minutes, 'agorot': cost,
+                         'balance': balance(sub) - cost})
+    return cost
 
 
 def create_subscriber(con, *, main_phone, name='', plan='monthly', status='active', amount=None,
