@@ -946,3 +946,42 @@ class MessageExtensionTests(Base):
         with self.con:
             r = ivr.handle(self.cfg, self.con, {**p, 'menu': '9'}, DAY, 'menu')[0]
         self.assertEqual(r, [{'type': 'goTo', 'goTo': '12101'}])
+
+
+class VoicemailTests(Base):
+    def test_record_then_owner_listens_with_code(self):
+        self.cfg['voicemail_pin_hash'] = admin.hash_password('12345', rounds=1000)
+        caller = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'v1', 'PBXcallStatus': 'CALL'}
+        with self.con:
+            ivr.handle(self.cfg, self.con, caller, DAY, 'menu')
+        with self.con:
+            r = ivr.handle(self.cfg, self.con, {**caller, 'menu': '9'}, DAY, 'menu')[0]
+        self.assertEqual(r[0]['type'], 'record')
+        with self.con:
+            ivr.handle(self.cfg, self.con, {**caller, 'menu': '9', 'rec': 'f.wav', 'FILEID_rec': 'F1',
+                                            'DURATION_rec': '7'}, DAY, 'menu')
+        owner = {'PBXphone': '0533333333', 'PBXnum': PBX, 'PBXcallId': 'o1', 'PBXcallStatus': 'CALL'}
+        call = lambda **a: ivr.handle(self.cfg, self.con, {**owner, **a}, DAY, 'menu')[0]
+        with self.con:
+            call()
+        with self.con:
+            r = call(menu='0')
+        self.assertEqual(r[0]['name'], 'vpin')
+        with self.con:
+            r = call(menu='0', vpin='999')
+        self.assertIn('שגוי', ' '.join(f.get('text', '') for f in r[0]['files']))
+        with self.con:
+            r = call(menu='0', vpin='12345')
+        self.assertIn({'fileId': 'F1'}, r[0]['files'])
+        self.assertIn({'digits': '0521234567'}, r[0]['files'])
+        with self.con:
+            r = call(menu='0', vpin='12345', vnav='7')
+        self.assertEqual(self.con.execute('SELECT state FROM messages').fetchone()[0], 'deleted')
+
+    def test_key0_without_code_configured_just_shows_menu(self):
+        p = {'PBXphone': '0533333333', 'PBXnum': PBX, 'PBXcallId': 'o2', 'PBXcallStatus': 'CALL'}
+        with self.con:
+            ivr.handle(self.cfg, self.con, p, DAY, 'menu')
+        with self.con:
+            r = ivr.handle(self.cfg, self.con, {**p, 'menu': '0'}, DAY, 'menu')[0]
+        self.assertEqual(r[0]['name'], 'menu')

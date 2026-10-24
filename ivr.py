@@ -26,9 +26,9 @@ import time
 
 import store
 
-MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history', 'pay', 'reconnect', 'alert', 'stop')
+MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history', 'pay', 'reconnect', 'alert', 'stop', 'voicemail')
 MENU_KEYS = {'1': 'activate', '2': 'listen', '3': 'info', '4': 'phones', '5': 'verify', '6': 'account',
-             '7': 'history', '8': 'stop', '9': 'message'}
+             '7': 'history', '8': 'stop', '9': 'message', '0': 'voicemail'}
 HEB_MONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר',
               'נובמבר', 'דצמבר']
 VERIFY_TTL = 30 * 60
@@ -79,6 +79,17 @@ TEXTS = {
     'rc_keys_free': 'לחיוג לטלפון שבחדר והפעלת הניטור מחדש הקישו 1. לסיום הקישו 0.',
     'rc_no_balance': 'החיוג לטלפון שבחדר עולה כשקל, ומחויב מהפיקדון. אין מספיק יתרה בפיקדון. '
                      'לטעינת פיקדון התקשרו מהטלפון הרשום, הקישו 6, אחר כך 5, ואחר כך 3.',
+    'vm_pin': 'הקישו את הקוד.',
+    'vm_bad_pin': 'הקוד שגוי.',
+    'vm_none': 'אין הודעות.',
+    'vm_intro': 'יש {n} הודעות, מתוכן {new} חדשות. מתחילים מהחדשה ביותר. '
+                'בכל רגע: לבאה הקישו 3, לקודמת 1, לשמיעה חוזרת 2, לפרטי ההודעה 5, למחיקה 7, לסיום 0.',
+    'vm_item': 'הודעה {i}, מהטלפון',
+    'vm_when': 'ב-{date} בשעה {hh}, {sec} שניות.',
+    'vm_unknown': 'ממספר חסוי,',
+    'vm_deleted': 'ההודעה נמחקה.',
+    'vm_end': 'אלה כל ההודעות. להתראות.',
+    'vm_first': 'זו ההודעה החדשה ביותר.',
     'stop_none': 'אין כרגע ניטור פעיל ששולח אליכם התראות.',
     'stop_done': 'קבלת ההתראות מהטלפון שבחדר הופסקה. השיחה בחדר תמשיך עד שינתקו אותה שם.',
     'stop_pick': 'להפסקת ההתראות מהטלפון',
@@ -290,6 +301,7 @@ class Call:
             'al_menu': ('alm', self.on_alert_menu), 'rc_wait': ('rcw', self.on_reconnect_wait),
             'rc_done': ('rcd', self.on_reconnect_done), 'stop_pick': ('stp', self.on_stop_pick),
             'al_mode': ('alt', self.on_alert_mode), 'pay_dep': ('pdep', self.on_deposit_pick),
+            'vm_pin': ('vpin', self.on_vm_pin), 'vm_nav': ('vnav', self.on_vm_nav),
         }
         if step in handlers and handlers[step][0] in p:
             return handlers[step][1](p[handlers[step][0]])
@@ -302,6 +314,7 @@ class Call:
                 'phones': self.phones, 'verify': self.verify, 'account': self.account,
                 'message': self.message, 'history': self.history,
                 'pay': self.pay_menu, 'reconnect': self.reconnect, 'stop': self.stop_alerts,
+                'voicemail': self.voicemail,
                 'alert': self.disconnect_alert}.get(mode, self.activate)()
 
     def on_hangup(self):
@@ -891,6 +904,78 @@ class Call:
         if key == '5':  # time and details of the current recording, then continue
             return self.history_menu([{'text': self.history_details(idx)}])
         return self.history_play(idx + 1)  # '3' or no key: next (older)
+
+    # ----- 0 (not announced): the owner's voicemail, behind a code -----
+    def voicemail(self, prefix=None):
+        if not self.cfg.get('voicemail_pin_hash'):
+            return self.menu(notices=False)
+        self.save('vm_pin')
+        return [ask('vpin', [prefix, t(self.cfg, 'vm_pin')], mx=8, mn=1, timeout=8)]
+
+    def on_vm_pin(self, value):
+        import admin
+        if not admin.check_password(value or '', self.cfg['voicemail_pin_hash']):
+            store.audit(self.con, 'voicemail_bad_pin', {'phone': self.phone})
+            if self.retry():
+                return self.voicemail(t(self.cfg, 'vm_bad_pin'))
+            self.save(None)
+            return hangup(self.cfg, t(self.cfg, 'vm_bad_pin'))
+        rows = self.con.execute("SELECT id, state FROM messages WHERE file_id IS NOT NULL AND state!='deleted' "
+                                "ORDER BY id DESC LIMIT 100").fetchall()
+        if not rows:
+            self.save(None)
+            return hangup(self.cfg, t(self.cfg, 'vm_none'))
+        new = [r['id'] for r in rows if r['state'] != 'heard']
+        old = [r['id'] for r in rows if r['state'] == 'heard']
+        self.data['vm'] = new + old  # new first, newest first
+        return self.vm_play(0, t(self.cfg, 'vm_intro', n=len(rows), new=len(new)))
+
+    def vm_menu(self, files):
+        self.save('vm_nav')
+        return [{'type': 'simpleMenu', 'name': 'vnav', 'enabledKeys': '0,1,2,3,5,7', 'times': 1,
+                 'timeout': int(self.cfg.get('history_gap', 2)), 'errorReturn': 'NEXT',
+                 'files': [f for f in files if f]}]
+
+    def vm_row(self, idx):
+        ids = self.data.get('vm', [])
+        return self.con.execute('SELECT * FROM messages WHERE id=?', (ids[idx],)).fetchone() if idx < len(ids) else None
+
+    def vm_play(self, idx, prefix=None):
+        idx = max(0, idx)
+        row = self.vm_row(idx)
+        if not row:
+            self.save(None)
+            return hangup(self.cfg, prefix, t(self.cfg, 'vm_end'))
+        self.data['vidx'] = idx
+        self.con.execute("UPDATE messages SET state='heard' WHERE id=? AND state!='deleted'", (row['id'],))
+        head = [t(self.cfg, 'vm_item', i=idx + 1)]
+        head += [{'digits': row['phone']}] if row['phone'] else [t(self.cfg, 'vm_unknown')]
+        return self.vm_menu([{'text': prefix} if prefix else None] + [h if isinstance(h, dict) else {'text': h}
+                                                                      for h in head] + [{'fileId': row['file_id']}])
+
+    def on_vm_nav(self, key):
+        idx = self.data.get('vidx', 0)
+        if key == '0':
+            self.save(None)
+            return hangup(self.cfg, t(self.cfg, 'goodbye'))
+        if key == '1':
+            return self.vm_play(idx - 1, t(self.cfg, 'vm_first') if idx == 0 else None)
+        if key == '2':
+            return self.vm_play(idx)
+        if key == '5':
+            row = self.vm_row(idx)
+            if row:
+                tz = __import__('zoneinfo').ZoneInfo(self.cfg.get('timezone', 'Asia/Jerusalem'))
+                d = datetime.datetime.fromtimestamp(row['created'], tz)
+                return self.vm_menu([{'text': t(self.cfg, 'vm_when', date=say_date(d.date().isoformat()),
+                                                hh=d.strftime('%H:%M'), sec=int(row['duration'] or 0))}])
+        if key == '7':
+            row = self.vm_row(idx)
+            if row:
+                self.con.execute("UPDATE messages SET state='deleted' WHERE id=?", (row['id'],))
+                store.audit(self.con, 'voicemail_delete', {'id': row['id']})
+                return self.vm_play(idx + 1, t(self.cfg, 'vm_deleted'))
+        return self.vm_play(idx + 1)
 
     # ----- 3: info -----
     def info(self):
