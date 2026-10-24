@@ -321,10 +321,11 @@ SETTABLE = {'messages_folder'}
 
 def set_value():
     """install.py set KEY VALUE  (KEY in SETTABLE; VALUE 0 = remove)"""
-    if len(sys.argv) < 4 or sys.argv[2] not in SETTABLE:
+    key = sys.argv[2].replace('-', '_') if len(sys.argv) > 2 else ''  # '-' is easier to type in the console
+    if len(sys.argv) < 4 or key not in SETTABLE:
         print('usage: install.py set KEY VALUE   keys:', ' '.join(sorted(SETTABLE)))
         return
-    key, val = sys.argv[2], sys.argv[3].strip()
+    val = sys.argv[3].strip()
     with open(NEW_CFG, encoding='utf-8') as f:
         cfg = json.load(f)
     if val == '0':
