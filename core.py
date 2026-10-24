@@ -125,6 +125,10 @@ def queue_reconnect(cfg, con, sub_id, room_phone, prev_call_id, requested_by, no
                          (sub_id, now - 7200)).fetchone()[0]
     if recent >= int(cfg.get('reconnect_max_per_2h', 4)):
         return False, 'too_many'
+    if cfg.get('reconnect_charge', True):  # the call costs about 1 NIS at Technoline: paid from the deposit
+        sub = con.execute('SELECT * FROM subscribers WHERE id=?', (sub_id,)).fetchone()
+        if not sub or store.balance(sub) < int(cfg.get('reconnect_min_agorot', 100)):
+            return False, 'no_balance'
     con.execute('INSERT INTO alerts(unique_key,subscriber_id,call_id,kind,alert_phone,created,state,payload) '
                 'VALUES(?,?,?,?,?,?,?,?)',
                 (f'reconnect:{prev_call_id}:{int(now)}', sub_id, prev_call_id, 'reconnect', room_phone, now, 'pending',
@@ -260,7 +264,8 @@ def process_one(cfg, db_path, sender=send_alert, log=print):
     with con:
         con.execute('UPDATE alerts SET state=?, result=? WHERE id=?',
                     (state, json.dumps(result, ensure_ascii=False), row['id']))
-        if mode == 'message' and state == 'sent' and row['kind'] in PING_CODES:
+        if state == 'sent' and ((mode == 'message' and row['kind'] in PING_CODES) or
+                                (row['kind'] == 'reconnect' and cfg.get('reconnect_charge', True))):
             store.charge_alert(con, row['subscriber_id'], result.get('billing'), row['id'])
     con.close()
     return True

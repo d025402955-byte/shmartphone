@@ -71,7 +71,9 @@ TEXTS = {
     'notice_disc': 'בשעה {hh} השיחה מהטלפון שבחדר התינוק נותקה.',
     'notice_balance': 'בשעה {hh} יתרת הפיקדון נגמרה, והניטור הסתיים.',
     'notice_history': 'לשמיעת הרעשים הקישו 7 בתפריט.',
-    'al_keys_menu': 'לחיוג לטלפון שבחדר וחידוש הניטור הקישו 1. לתפריט הראשי הקישו 0.',
+    'al_keys_menu': 'לחיוג לטלפון שבחדר וחידוש הניטור, בעלות של כשקל מהפיקדון, הקישו 1. לתפריט הראשי הקישו 0.',
+    'rc_no_balance': 'החיוג לטלפון שבחדר עולה כשקל, ומחויב מהפיקדון. אין מספיק יתרה בפיקדון. '
+                     'לטעינת פיקדון התקשרו מהטלפון הרשום, הקישו 6, אחר כך 5, ואחר כך 3.',
     'stop_none': 'אין כרגע ניטור פעיל ששולח אליכם התראות.',
     'stop_done': 'קבלת ההתראות מהטלפון שבחדר הופסקה. השיחה בחדר תמשיך עד שינתקו אותה שם.',
     'stop_pick': 'להפסקת ההתראות מהטלפון',
@@ -136,13 +138,13 @@ TEXTS = {
     'pay_ok_annual': 'תודה. המנוי השנתי הופעל, והוא בתוקף עד {date}.',
     'pay_next': 'להפעלת השמרטפון התקשרו שוב ובחרו 1. להתראות.',
     'al_disconnected': 'שלום, כאן שמרטפון. הקו בחדר התינוק התנתק.',
-    'al_keys': 'לחיוג לטלפון שבחדר וחידוש הניטור הקישו 1. לסיום הקישו 0.',
+    'al_keys': 'לחיוג לטלפון שבחדר וחידוש הניטור, בעלות של כשקל מהפיקדון, הקישו 1. לסיום הקישו 0.',
     'rc_dialing': 'מתקשרים לטלפון שבחדר. נא להמתין על הקו.',
     'rc_still': 'עדיין מנסים להתחבר.',
     'rc_ok': 'הניטור חודש בהצלחה. להאזנה לחדר הקישו 2. לסיום הקישו 0.',
     'rc_failed': 'לא הצלחנו להתחבר לטלפון שבחדר. כדאי לבדוק את הטלפון. להתראות.',
     'rc_one': 'הניטור בחדר התנתק בשעה {hh}.',
-    'rc_keys': 'לחיוג לטלפון שבחדר והפעלת הניטור מחדש הקישו 1. לסיום הקישו 0.',
+    'rc_keys': 'לחיוג לטלפון שבחדר והפעלת הניטור מחדש, בעלות של כשקל מהפיקדון, הקישו 1. לסיום הקישו 0.',
     'rc_many': 'הניטור התנתק בכמה חדרים.',
     'rc_room': 'לחיוג חוזר לטלפון',
     'rc_calling': 'מתקשרים עכשיו לטלפון שבחדר. כשהוא יענה, הניטור יתחדש. להתראות.',
@@ -697,7 +699,7 @@ class Call:
         ok, why = core.queue_reconnect(self.cfg, self.con, sid, room_phone, prev_call, self.phone, self.now)
         self.save(None)
         if not ok:
-            return hangup(self.cfg, t(self.cfg, 'rc_too_many' if why == 'too_many' else 'error'))
+            return hangup(self.cfg, t(self.cfg, {'too_many': 'rc_too_many', 'no_balance': 'rc_no_balance'}.get(why, 'error')))
         self.wake = True
         return hangup(self.cfg, t(self.cfg, 'rc_calling'))
 
@@ -734,7 +736,7 @@ class Call:
         import core
         ok, why = core.queue_reconnect(self.cfg, self.con, sid, room_phone, prev_call, self.phone, self.now)
         if not ok:
-            return hangup(self.cfg, t(self.cfg, 'rc_too_many' if why == 'too_many' else 'error'))
+            return hangup(self.cfg, t(self.cfg, {'too_many': 'rc_too_many', 'no_balance': 'rc_no_balance'}.get(why, 'error')))
         self.wake = True
         self.data['rc_since'] = self.now
         return self.wait_prompt(t(self.cfg, 'rc_dialing'))
@@ -952,7 +954,7 @@ class Call:
         self.save('acc_menu')
         return [ask('acm', [prefix, t(self.cfg, 'account_menu'),
                             t(self.cfg, 'account_pay') if self.payments_on() else None,
-                            t(self.cfg, 'account_alerts')])]
+                            t(self.cfg, 'account_alerts') if self.cfg.get('alert_choice') else None])]
 
     # ----- payments (Technoline creditCard module -> Nedarim Plus) -----
     def payments_on(self):
@@ -1096,7 +1098,7 @@ class Call:
             return self.ask_verify_number(sub, [])
         if key == '5' and self.payments_on():
             return self.pay_menu(sub)
-        if key == '6':
+        if key == '6' and self.cfg.get('alert_choice'):
             return self.alert_mode_menu(sub)
         return hangup(self.cfg, t(self.cfg, 'goodbye'))
 

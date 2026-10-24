@@ -320,9 +320,15 @@ def add_credit(con, sid, agorot, *, source, amount, confirm=None, transaction_id
             con.execute('UPDATE payments SET transaction_id=COALESCE(transaction_id,?) WHERE id=?',
                         (transaction_id, row['id']))
             return None
-    con.execute("UPDATE subscribers SET balance=COALESCE(balance,0)+?, plan='prepaid', status='active', "
-                "billing=COALESCE(billing,?), updated=? WHERE id=?",
-                (agorot, 'nedarim' if source != 'admin' else 'admin', time.time(), sid))
+    sub = con.execute('SELECT * FROM subscribers WHERE id=?', (sid,)).fetchone()
+    keep_plan = sub['plan'] in ('monthly', 'annual', 'free') and authorization(sub, datetime.date.today())[0]
+    if keep_plan:  # an active subscription keeps its plan; the deposit pays for extras (reconnect calls)
+        con.execute('UPDATE subscribers SET balance=COALESCE(balance,0)+?, updated=? WHERE id=?',
+                    (agorot, time.time(), sid))
+    else:
+        con.execute("UPDATE subscribers SET balance=COALESCE(balance,0)+?, plan='prepaid', status='active', "
+                    "billing=COALESCE(billing,?), updated=? WHERE id=?",
+                    (agorot, 'nedarim' if source != 'admin' else 'admin', time.time(), sid))
     con.execute('INSERT INTO payments(subscriber_id,source,plan,amount,confirm,transaction_id,created) '
                 'VALUES(?,?,?,?,?,?,?)', (sid, source, 'deposit', amount, confirm, transaction_id, time.time()))
     new = con.execute('SELECT balance FROM subscribers WHERE id=?', (sid,)).fetchone()[0]

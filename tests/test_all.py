@@ -595,7 +595,7 @@ class PaymentTests(Base):
 
 class ReconnectTests(Base):
     def test_parent_requests_reconnect_and_room_auto_resumes(self):
-        self.cfg['reconnect_extension'] = '4321'
+        self.cfg.update({'reconnect_extension': '4321', 'reconnect_charge': False})
         with self.con:
             sid = store.create_subscriber(self.con, main_phone='0521234567')
             store.add_verified(self.con, sid, '0501112222', 'admin')
@@ -662,7 +662,7 @@ class ReconnectTests(Base):
 
 class AlertReconnectTests(Base):
     def setup_dropped(self):
-        self.cfg.update({'reconnect_extension': '4321', 'alert_extension': '4322'})
+        self.cfg.update({'reconnect_extension': '4321', 'alert_extension': '4322', 'reconnect_charge': False})
         with self.con:
             sid = store.create_subscriber(self.con, main_phone='0521234567')
             store.add_verified(self.con, sid, '0501112222', 'admin')
@@ -754,7 +754,8 @@ class PingAndDepositTests(Base):
         self.cfg.update({'alert_mode': 'ping', 'reconnect_extension': '12079',
                          'payments': {'monthly': 8.9, 'annual': 82, 'per_minute_agorot': 1}})
         with self.con:
-            self.sid = store.create_subscriber(self.con, main_phone='0521234567')
+            self.sid = store.create_subscriber(self.con, main_phone='0521234567', plan='trial', status='trial',
+                                               expires='2099-01-01')
             store.add_verified(self.con, self.sid, '0501112222', 'admin')
         self.room = f's{self.sid}-0521234567'
 
@@ -902,3 +903,20 @@ class PingAndDepositTests(Base):
             nedarim.apply_transactions(self.cfg, self.con, [{'TransactionId': '5', 'Amount': '20', 'Confirmation': '777',
                                                               'Groupe': f'שמרטפון פיקדון {self.sid}'}], log=lambda *a, **k: None)
         self.assertEqual(self.con.execute('SELECT balance FROM subscribers WHERE id=?', (self.sid,)).fetchone()[0], 2000)
+
+
+class ReconnectChargeTests(Base):
+    def test_needs_deposit_and_charges_cost(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567')
+        cfg = {**self.cfg, 'reconnect_extension': '12079'}
+        with self.con:
+            self.assertEqual(core.queue_reconnect(cfg, self.con, sid, '0521234567', 'c1', '0501112222'),
+                             (False, 'no_balance'))
+            store.add_credit(self.con, sid, 300, source='admin', amount=3)
+        sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sid,)).fetchone()
+        self.assertEqual(sub['plan'], 'monthly')  # an active plan is kept; the deposit pays extras
+        with self.con:
+            self.assertEqual(core.queue_reconnect(cfg, self.con, sid, '0521234567', 'c1', '0501112222'), (True, ''))
+        core.process_one(cfg, self.db, lambda *a, **k: ('sent', {'billing': '1.00'}), log=lambda *a, **k: None)
+        self.assertEqual(self.con.execute('SELECT balance FROM subscribers WHERE id=?', (sid,)).fetchone()[0], 200)
