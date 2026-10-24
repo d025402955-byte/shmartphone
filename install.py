@@ -283,6 +283,23 @@ def set_recharge():
     print('reconnect charged from deposit:', v)
 
 
+def set_message_extension():
+    """install.py msgext EXTENSION_ID  key 9 goes to this Technoline extension (0 = record here)"""
+    v = (sys.argv[2] if len(sys.argv) > 2 else '').strip()
+    if not v.isdigit():
+        print('usage: install.py msgext EXTENSION_ID   (0 = off)')
+        return
+    with open(NEW_CFG, encoding='utf-8') as f:
+        cfg = json.load(f)
+    if v == '0':
+        cfg.pop('message_extension', None)
+    else:
+        cfg['message_extension'] = v
+    write_config(cfg, service_user())
+    run('systemctl', 'restart', SERVICE)
+    print('key 9 ->', cfg.get('message_extension', 'record here'))
+
+
 def set_payments():
     """Turn on payments by phone (Technoline creditCard -> Nedarim Plus) and the renewal sync."""
     with open(NEW_CFG, encoding='utf-8') as f:
@@ -358,5 +375,5 @@ if __name__ == '__main__':
     if os.geteuid() != 0:
         sys.exit('run as root')
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'install'
-    {'install': install, 'password': set_password, 'rollback': rollback, 'smtp': set_smtp, 'voice': set_voice, 'alerts': set_alerts, 'price': set_price, 'recharge': set_recharge, 'payments': set_payments, 'reconnect': set_reconnect,
+    {'install': install, 'password': set_password, 'rollback': rollback, 'smtp': set_smtp, 'voice': set_voice, 'alerts': set_alerts, 'price': set_price, 'recharge': set_recharge, 'msgext': set_message_extension, 'payments': set_payments, 'reconnect': set_reconnect,
      'status': lambda: print(run('systemctl', 'status', SERVICE, '--no-pager', check=False))}[cmd]()

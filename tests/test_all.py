@@ -935,3 +935,14 @@ class BalanceTests(Base):
         texts = ' '.join(f.get('text', '') for f in r[0]['files'])
         self.assertIn('50 שקלים', texts)
         self.assertIn('50 חיוגים', texts)
+
+
+class MessageExtensionTests(Base):
+    def test_key9_goes_to_technoline_voicemail(self):
+        self.cfg['message_extension'] = '12101'
+        p = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'm1', 'PBXcallStatus': 'CALL'}
+        with self.con:
+            ivr.handle(self.cfg, self.con, p, DAY, 'menu')
+        with self.con:
+            r = ivr.handle(self.cfg, self.con, {**p, 'menu': '9'}, DAY, 'menu')[0]
+        self.assertEqual(r, [{'type': 'goTo', 'goTo': '12101'}])

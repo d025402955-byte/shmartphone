@@ -1165,6 +1165,9 @@ class Call:
 
     # ----- 9: message -----
     def message(self):
+        if self.cfg.get('message_extension'):  # Technoline's own voicemail extension records and emails it
+            self.save(None)
+            return [{'type': 'goTo', 'goTo': str(self.cfg['message_extension'])}]
         sub = store.find_by_phone(self.con, self.phone)
         self.save('recording', subscriber_id=sub['id'] if sub else None, mode='message')
         return [{'type': 'record', 'name': 'rec', 'max': 180, 'min': 2, 'confirm': 'confirmOnly',
