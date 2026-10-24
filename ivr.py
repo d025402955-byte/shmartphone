@@ -860,7 +860,8 @@ class Call:
         rows = self.con.execute('SELECT * FROM noise_events WHERE subscriber_id=? AND started>? '
                                 'ORDER BY started DESC LIMIT 30', (sid, self.now - 86400)).fetchall()
         self.data['hsid'] = sid
-        self.data['hev'] = [[r['started'], r['file_id'], int(round(r['noise_sec'] or 0)), r['peak']] for r in rows]
+        self.data['hev'] = [[r['started'], r['file_id'], int(round(r['noise_sec'] or 0)), r['peak'], r['id']]
+                            for r in rows]
         self.data['hidx'] = 0
         intro = t(self.cfg, 'history_intro', n=len(rows))
         return self.history_play(0, intro)
@@ -868,7 +869,7 @@ class Call:
     def history_details(self, idx):
         import zoneinfo
         tz = zoneinfo.ZoneInfo(self.cfg.get('timezone', 'Asia/Jerusalem'))
-        started, _, sec, peak = self.data['hev'][idx]
+        started, _, sec, peak = self.data['hev'][idx][:4]
         mins = max(0, int((self.now - started) // 60))
         ago = f'{mins} דקות' if mins < 120 else f'{mins // 60} שעות'
         when = datetime.datetime.fromtimestamp(started, tz).strftime('%H:%M')
@@ -892,7 +893,16 @@ class Call:
         self.data['hidx'] = idx
         fid = events[idx][1]
         return self.history_menu([{'text': prefix} if prefix else None,
-                                  {'fileId': fid} if fid else {'text': t(self.cfg, 'history_no_file')}])
+                                  self.noise_file(events[idx][4]) if fid else {'text': t(self.cfg, 'history_no_file')}])
+
+    def noise_file(self, event_row_id):
+        """Name the extension the recording was saved in, or Technoline plays silence."""
+        r = self.con.execute('SELECT * FROM noise_events WHERE id=?', (event_row_id,)).fetchone()
+        item = {'fileName': r['file_name']} if r['file_name'] else {'fileId': r['file_id']}
+        folder = r['folder'] or self.cfg.get('messages_folder')
+        if folder:
+            item['extensionId'] = str(folder)
+        return item
 
     def on_history_nav(self, key):
         idx = self.data.get('hidx', 0)
