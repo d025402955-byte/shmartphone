@@ -20,6 +20,7 @@ parameters can never be mistaken for new answers.
 """
 import datetime
 import json
+import re
 import secrets
 import time
 
@@ -1202,9 +1203,20 @@ def apply_voice(cfg, resp):
         return resp
     fixed = {t(cfg, k) for k, v in TEXTS.items() if '{' not in v}
     for cmd in resp:
-        for f in cmd.get('files', []) or []:
+        files = cmd.get('files')
+        if not files:
+            continue
+        out = []
+        for f in files:
             if isinstance(f, dict) and f.get('text') in fixed:
-                f['voice'] = voice
+                # short sentences synthesize fast (long Gemini texts can leave the caller in silence) and are
+                # cached one by one, so menus that share sentences reuse them
+                for part in re.split(r'(?<=[.?!])\s+', f['text'].strip()):
+                    if part:
+                        out.append({'text': part, 'voice': voice})
+            else:
+                out.append(f)
+        cmd['files'] = out
     return resp
 
 
