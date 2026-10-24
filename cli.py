@@ -108,12 +108,12 @@ def log_window(day, hhmm, minutes=3):
         print(parts[0][11:19], parts[3] if len(parts) > 3 else line)
 
 
-def doc(word, context=40):
+def doc(word, context=40, name='PBX_DOCUMENTATION_CENTER.md'):
     """Search Technoline's documentation for word; prints matching lines with context. Read-only."""
     import urllib.request
-    path = '/tmp/pbx_doc.md'
+    path = '/tmp/pbx_' + os.path.basename(name)
     if not os.path.exists(path):
-        req = urllib.request.Request('https://app.ipsales.co.il/PBX_DOCUMENTATION_CENTER.md',
+        req = urllib.request.Request('https://app.ipsales.co.il/' + os.path.basename(name),
                                      headers={'User-Agent': 'curl/8.5.0'})
         with urllib.request.urlopen(req, timeout=60) as r:
             data = r.read()
@@ -152,7 +152,7 @@ if __name__ == '__main__':
     elif cmd == 'log':
         log_window(*sys.argv[2:5])
     elif cmd == 'doc':
-        doc(*sys.argv[2:4])
+        doc(*sys.argv[2:5])
     elif cmd == 'ext':
         for e in sys.argv[2:]:
             ext_settings(e)
