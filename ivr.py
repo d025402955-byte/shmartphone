@@ -81,6 +81,7 @@ TEXTS = {
     'listen_pick': 'להאזנה לחדר של המנוי',
     'listen_connect': 'מתחברים לחדר.',
     'listen_ended': 'הניטור בחדר הסתיים.',
+    'listen_failed': 'לא הצלחנו לחבר אתכם לחדר. נסו שוב בעוד רגע.',
     'listen_full': 'כבר יש מאזין בחדר. נסו שוב בעוד כמה דקות.',
     'phones_menu': 'להוספת טלפון מורשה הקישו 1. לשמיעת הטלפונים המורשים הקישו 2. להסרת טלפון מורשה הקישו 3. לסיום הקישו 0.',
     'phones_ask': 'הקישו את מספר הטלפון שתרצו להוסיף, ובסיומו הקישו סולמית.',
@@ -485,6 +486,7 @@ class Call:
     def join(self, main, room, sid):
         self.save('listening', room_id=None, subscriber_id=sid, status='listening', mode='listen')
         self.data['room'] = room
+        self.data['join_at'] = self.now
         self.save('listening')
         return [say(t(self.cfg, 'listen_connect')), {'type': 'noiseMonitorJoin', 'name': 'join', 'roomId': room}]
 
@@ -494,6 +496,8 @@ class Call:
         msgs = {'MONITOR_ENDED': 'listen_ended', 'NOT_ACTIVE': 'listen_none', 'FULL': 'listen_full',
                 'REJECTED': 'listen_full'}
         if status == 'LEFT':
+            if self.now - self.data.get('join_at', 0) < 15:  # left almost immediately: the join did not work
+                return hangup(self.cfg, t(self.cfg, 'listen_failed'))
             return [{'type': 'hangup'}]
         return hangup(self.cfg, t(self.cfg, msgs.get(status, 'error')))
 

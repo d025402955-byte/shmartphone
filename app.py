@@ -132,8 +132,10 @@ def make_handler(cfg):
                     con.close()
                 if wake_now:
                     wake.set()
-                print('IVR', mode, params.get('PBXcallStatus'),
-                      'types=' + ','.join(c.get('type', '') for c in resp), flush=True)
+                results = {k: params[k] for k in ('join', 'nm', 'rcw', 'rcd', 'alm', 'menu', 'payment', 'hnav')
+                           if k in params}
+                print('IVR', mode, params.get('PBXcallStatus'), params.get('PBXcallType', ''),
+                      'types=' + ','.join(c.get('type', '') for c in resp), json.dumps(results), flush=True)
                 return self.json(200, resp)
 
             if len(parts) == 2 and parts[0] == 'events' and method == 'POST' \
