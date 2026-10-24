@@ -974,7 +974,7 @@ class VoicemailTests(Base):
         self.assertIn('שגוי', ' '.join(f.get('text', '') for f in r[0]['files']))
         with self.con:
             r = call(menu='0', vpin='12345')
-        self.assertIn({'fileId': 'F1'}, r[0]['files'])
+        self.assertIn({'fileName': 'f.wav'}, r[0]['files'])
         self.assertIn({'digits': '0521234567'}, r[0]['files'])
         with self.con:
             r = call(menu='0', vpin='12345', vnav='7')

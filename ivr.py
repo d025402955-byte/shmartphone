@@ -953,7 +953,15 @@ class Call:
         head = [t(self.cfg, 'vm_item', i=idx + 1)]
         head += [{'digits': row['phone']}] if row['phone'] else [t(self.cfg, 'vm_unknown')]
         return self.vm_menu([{'text': prefix} if prefix else None] + [h if isinstance(h, dict) else {'text': h}
-                                                                      for h in head] + [{'fileId': row['file_id']}])
+                                                                      for h in head] + [self.vm_file(row)])
+
+    def vm_file(self, row):
+        """A recording lives in the extension it was recorded in; playback elsewhere must name that extension."""
+        folder = self.cfg.get('messages_folder')
+        item = {'fileName': row['file_name']} if row['file_name'] else {'fileId': row['file_id']}
+        if folder:
+            item['extensionId'] = str(folder)
+        return item
 
     def on_vm_nav(self, key):
         idx = self.data.get('vidx', 0)
@@ -1257,7 +1265,9 @@ class Call:
             return [{'type': 'goTo', 'goTo': str(self.cfg['message_extension'])}]
         sub = store.find_by_phone(self.con, self.phone)
         self.save('recording', subscriber_id=sub['id'] if sub else None, mode='message')
+        folder = self.cfg.get('messages_folder')
         return [{'type': 'record', 'name': 'rec', 'max': 180, 'min': 2, 'confirm': 'confirmOnly',
+                 **({'saveFolder': str(folder)} if folder else {}),
                  'hangupSave': 'yes', 'files': [{'text': t(self.cfg, 'message_prompt')}]}]
 
     def store_message(self):

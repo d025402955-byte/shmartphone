@@ -316,6 +316,26 @@ def set_voicemail_pin():
     print('voicemail code saved')
 
 
+SETTABLE = {'messages_folder'}
+
+
+def set_value():
+    """install.py set KEY VALUE  (KEY in SETTABLE; VALUE 0 = remove)"""
+    if len(sys.argv) < 4 or sys.argv[2] not in SETTABLE:
+        print('usage: install.py set KEY VALUE   keys:', ' '.join(sorted(SETTABLE)))
+        return
+    key, val = sys.argv[2], sys.argv[3].strip()
+    with open(NEW_CFG, encoding='utf-8') as f:
+        cfg = json.load(f)
+    if val == '0':
+        cfg.pop(key, None)
+    else:
+        cfg[key] = val
+    write_config(cfg, service_user())
+    run('systemctl', 'restart', SERVICE)
+    print(key, '=', cfg.get(key))
+
+
 def set_payments():
     """Turn on payments by phone (Technoline creditCard -> Nedarim Plus) and the renewal sync."""
     with open(NEW_CFG, encoding='utf-8') as f:
@@ -391,5 +411,5 @@ if __name__ == '__main__':
     if os.geteuid() != 0:
         sys.exit('run as root')
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'install'
-    {'install': install, 'password': set_password, 'rollback': rollback, 'smtp': set_smtp, 'voice': set_voice, 'alerts': set_alerts, 'price': set_price, 'recharge': set_recharge, 'msgext': set_message_extension, 'vmpin': set_voicemail_pin, 'payments': set_payments, 'reconnect': set_reconnect,
+    {'install': install, 'password': set_password, 'rollback': rollback, 'smtp': set_smtp, 'voice': set_voice, 'alerts': set_alerts, 'price': set_price, 'recharge': set_recharge, 'msgext': set_message_extension, 'vmpin': set_voicemail_pin, 'set': set_value, 'payments': set_payments, 'reconnect': set_reconnect,
      'status': lambda: print(run('systemctl', 'status', SERVICE, '--no-pager', check=False))}[cmd]()
