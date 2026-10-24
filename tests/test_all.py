@@ -189,7 +189,9 @@ class IvrTests(Base):
         self.send(apick='1')
         r = self.call('0501112222', mode='listen', call='L1')
         self.assertEqual(r[-1], {'type': 'noiseMonitorJoin', 'name': 'join', 'roomId': f's{sid}-0521234567'})
-        self.assertEqual(self.send(join='LEFT'), [{'type': 'hangup'}])
+        r = self.send(join='LEFT')  # left right away: the caller is told it did not work
+        self.assertIn('לא הצלחנו', r[0]['files'][0]['text'])
+        self.assertEqual(r[-1], {'type': 'hangup'})
         self.assertEqual(self.call('0599999999', mode='listen', call='L2')[-1]['type'], 'hangup')  # stranger
 
     def test_phones_menu(self):
