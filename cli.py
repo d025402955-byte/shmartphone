@@ -155,6 +155,26 @@ def test_alert(sid, kind='noise', mode='voice'):
         print(core.send_alert(cfg, kind, phone, mode='message'))
 
 
+def credit(phone, shekels):
+    """Add SHEKELS to the deposit of the subscriber that owns PHONE (main or extra phone)."""
+    path = db_path()
+    con = store.connect(path)
+    sub = store.find_by_phone(con, phone)
+    if not sub:
+        rows = con.execute('SELECT subscriber_id FROM alert_phones WHERE phone=?', (store.norm_phone(phone),)).fetchall()
+        print('no subscriber owns this phone; it is a verified alert number of subscriber(s):',
+              [r[0] for r in rows] or 'none')
+        con.close()
+        return
+    amount = float(shekels)
+    with con:
+        new = store.add_credit(con, sub['id'], round(amount * 100), source='admin', amount=amount, note='cli')
+    sub = con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
+    print('subscriber', sub['id'], 'plan', sub['plan'], 'status', sub['status'], 'balance', '%.2f' % (new / 100))
+    con.close()
+    fix_owner(path)
+
+
 def stats():
     con = store.connect(db_path())
     print('subscribers:', dict(con.execute('SELECT status, COUNT(*) FROM subscribers GROUP BY status').fetchall()))
@@ -170,6 +190,8 @@ if __name__ == '__main__':
         extensions()
     elif cmd == 'log':
         log_window(*sys.argv[2:5])
+    elif cmd == 'credit':
+        credit(*sys.argv[2:4])
     elif cmd == 'testalert':
         test_alert(*sys.argv[2:5])
     elif cmd == 'doc':
