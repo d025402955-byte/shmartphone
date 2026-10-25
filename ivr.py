@@ -63,8 +63,9 @@ TEXTS = {
     'no_verified': 'עדיין לא אומת מספר לקבלת התראות. נאמת מספר עכשיו.',
     'confirm_one': 'ההתראות יישלחו למספר',
     'confirm_one_keys': 'לאישור הקישו 1. לאימות מספר אחר הקישו 2.',
-    'pick_prefix': 'להתראות למספר',
+    'pick_prefix': 'לקבלת ההתראות במספר',
     'pick_press': 'הקישו',
+    **{f'press_{d}': f'הקישו {d}.' for d in range(10)},
     'pick_new': 'לאימות מספר חדש הקישו 9.',
     'pick_last': 'להתחברות עם פרטי ההתחברות האחרונה, הקישו 0.',
     'conf_to': 'ההתראות יישלחו למספר',
@@ -416,7 +417,7 @@ class Call:
         self.save('stop_pick')
         files = []
         for i, r in enumerate(rooms, 1):
-            files += [t(self.cfg, 'stop_pick'), {'digits': r['phone']}, t(self.cfg, 'pick_press'), {'number': str(i)}]
+            files += [t(self.cfg, 'stop_pick'), {'digits': r['phone']}, t(self.cfg, f'press_{i}')]
         return [ask('stp', files)]
 
     def on_stop_pick(self, key):
@@ -484,7 +485,7 @@ class Call:
         else:
             files = [intro] + last
             for i, ph in enumerate(choices, 1):
-                files += [t(self.cfg, 'pick_prefix'), {'digits': ph}, t(self.cfg, 'pick_press'), {'number': str(i)}]
+                files += [t(self.cfg, 'pick_prefix'), {'digits': ph}, t(self.cfg, f'press_{i}')]
             files.append(t(self.cfg, 'pick_new'))
         return ask('apick', files)
 
@@ -547,7 +548,7 @@ class Call:
         self.save('act_more')
         files = []
         for i, x in enumerate(cands, 1):
-            files += [t(self.cfg, 'more_pick'), {'digits': x}, t(self.cfg, 'pick_press'), {'number': str(i)}]
+            files += [t(self.cfg, 'more_pick'), {'digits': x}, t(self.cfg, f'press_{i}')]
         files.append(t(self.cfg, 'more_new'))
         return [ask('amore', files)]
 
@@ -739,7 +740,7 @@ class Call:
         self.save('lis_pick')
         files = []
         for i, (main, _, _) in enumerate(rooms[:8], 1):
-            files += [t(self.cfg, 'listen_pick'), {'digits': main}, t(self.cfg, 'pick_press'), {'number': str(i)}]
+            files += [t(self.cfg, 'listen_pick'), {'digits': main}, t(self.cfg, f'press_{i}')]
         return [ask('lpick', files)]
 
     def on_listen_pick(self, key):
@@ -810,7 +811,7 @@ class Call:
         else:
             files.append(t(self.cfg, 'rc_many'))
             for i, r in enumerate(rooms, 1):
-                files += [t(self.cfg, 'rc_room'), {'digits': r[2]}, t(self.cfg, 'pick_press'), {'number': str(i)}]
+                files += [t(self.cfg, 'rc_room'), {'digits': r[2]}, t(self.cfg, f'press_{i}')]
         return [ask('rcon', files, timeout=8)]
 
     def reconnect(self):
@@ -957,7 +958,7 @@ class Call:
         self.save('his_sub')
         files = []
         for i, (_, main) in enumerate(self.data['hsubs'], 1):
-            files += [t(self.cfg, 'history_pick'), {'digits': main}, t(self.cfg, 'pick_press'), {'number': str(i)}]
+            files += [t(self.cfg, 'history_pick'), {'digits': main}, t(self.cfg, f'press_{i}')]
         return [ask('hsub', files)]
 
     def on_history_sub(self, key):
@@ -1144,8 +1145,7 @@ class Call:
             self.save('ph_rm')
             files = []
             for i, e in enumerate(extras[:8], 1):
-                files += [t(self.cfg, 'phones_remove'), {'digits': e['phone']}, t(self.cfg, 'pick_press'),
-                          {'number': str(i)}]
+                files += [t(self.cfg, 'phones_remove'), {'digits': e['phone']}, t(self.cfg, f'press_{i}')]
             files.append(t(self.cfg, 'back_zero'))
             return [ask('phr', files)]
         if key == '0':
@@ -1317,7 +1317,7 @@ class Call:
             self.save('acc_rm')
             files = [t(self.cfg, 'account_verified')] + [{'digits': v} for v in ver[:8]]
             for i, v in enumerate(ver[:8], 1):
-                files += [t(self.cfg, 'account_remove'), {'digits': v}, t(self.cfg, 'pick_press'), {'number': str(i)}]
+                files += [t(self.cfg, 'account_remove'), {'digits': v}, t(self.cfg, f'press_{i}')]
             files.append(t(self.cfg, 'back_zero'))
             return [ask('acr', files)]
         if key == '3':
