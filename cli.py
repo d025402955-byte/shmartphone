@@ -217,6 +217,29 @@ def hostkey():
         print(subprocess.run(['ssh-keygen', '-lf', f], capture_output=True, text=True).stdout.strip())
 
 
+def addkey(kind, key, comment='admin-desktop'):
+    """Append an SSH public key to root's authorized_keys (no duplicates, safe permissions)."""
+    import base64
+    if kind not in ('ssh-ed25519', 'ssh-rsa', 'ecdsa-sha2-nistp256'):
+        print('unsupported key type')
+        return
+    base64.b64decode(key, validate=True)  # refuse anything that is not a key
+    d = '/root/.ssh'
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    path = os.path.join(d, 'authorized_keys')
+    old = open(path).read() if os.path.exists(path) else ''
+    if key in old:
+        print('key already present')
+        return
+    with open(path, 'a') as f:
+        if old and not old.endswith('\n'):
+            f.write('\n')
+        f.write(f'{kind} {key} {comment}\n')
+    os.chmod(path, 0o600)
+    os.chmod(d, 0o700)
+    print('key added; keys now:', sum(1 for line in open(path) if line.strip()))
+
+
 def stats():
     con = store.connect(db_path())
     print('subscribers:', dict(con.execute('SELECT status, COUNT(*) FROM subscribers GROUP BY status').fetchall()))
@@ -232,6 +255,8 @@ if __name__ == '__main__':
         extensions()
     elif cmd == 'log':
         log_window(*sys.argv[2:5])
+    elif cmd == 'addkey':
+        addkey(*sys.argv[2:5])
     elif cmd == 'hostkey':
         hostkey()
     elif cmd == 'simulate':
