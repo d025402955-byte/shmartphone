@@ -13,6 +13,8 @@ Each menu option is its own Technoline API extension pointing to /ivr/<token>/<m
   alert        (outbound) the 'room line disconnected' alert call: offers to call the room back
                and tells the parent whether monitoring resumed
   reconnect    after the room call dropped: call the room phone back (it must auto-answer) and resume
+  remote       2 -> 4: type the room phone number, choose the alert numbers as in 1, and the system calls
+               the room phone (it must auto-answer) and starts monitoring there
   pay          join / renew a paid subscription (card by phone through Technoline -> Nedarim Plus)
 
 Per-call state is kept in the sessions table (step + data), so stale request
@@ -27,9 +29,9 @@ import time
 import niqqud
 import store
 
-MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history', 'pay', 'reconnect', 'alert', 'stop', 'voicemail', 'parent')
+MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history', 'pay', 'reconnect', 'alert', 'stop', 'voicemail', 'parent', 'remote')
 MENU_KEYS = {'1': 'activate', '2': 'parent', '3': 'info', '4': 'account', '9': 'message', '0': 'voicemail'}
-PARENT_KEYS = {'1': 'listen', '2': 'history', '3': 'stop'}
+PARENT_KEYS = {'1': 'listen', '2': 'history', '3': 'stop', '4': 'remote'}
 HEB_MONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר',
               'נובמבר', 'דצמבר']
 VERIFY_TTL = 30 * 60
@@ -95,7 +97,12 @@ TEXTS = {
     'notice_disc': 'בשעה {hh} השיחה מהטלפון שבחדר התינוק נותקה.',
     'notice_balance': 'בשעה {hh} יתרת הפיקדון נגמרה, והניטור הסתיים.',
     'notice_history': 'לשמיעת הרעשים הקישו בתפריט הראשי 2 ואחר כך 2.',
-    'parent_menu': 'להאזנה לחדר הקישו 1. לשמיעת הרעשים שזוהו לאחרונה הקישו 2. להפסקת קבלת ההתראות מחדר פעיל הקישו 3.',
+    'parent_menu': 'להאזנה לחדר הקישו 1. לשמיעת הרעשים שזוהו לאחרונה הקישו 2. להפסקת קבלת ההתראות מחדר פעיל הקישו 3. '
+                   'לחיבור הטלפון שבחדר התינוק מרחוק הקישו 4.',
+    'rm_ask': 'הקישו את מספר הטלפון שבחדר התינוק, ובסיומו סולמית. בטלפון שבחדר צריך להגדיר מענה אוטומטי לשיחות.',
+    'rm_busy': 'הטלפון שבחדר כבר מחובר לניטור.',
+    'rm_ok': 'הטלפון שבחדר ענה, והניטור הופעל בהצלחה. להאזנה לחדר הקישו 2. לסיום הקישו 0.',
+    'rm_failed': 'לא הצלחנו להתחבר לטלפון שבחדר. ודאו שהוא דלוק ושמוגדר בו מענה אוטומטי לשיחות. להתראות.',
     'al_keys_menu': 'לחיוג לטלפון שבחדר וחידוש הניטור, בעלות של כשקל מהפיקדון, הקישו 1. לתפריט הראשי הקישו 0.',
     'al_keys_menu_free': 'לחיוג לטלפון שבחדר וחידוש הניטור הקישו 1. לתפריט הראשי הקישו 0.',
     'al_keys_free': 'לחיוג לטלפון שבחדר וחידוש הניטור הקישו 1. לסיום הקישו 0.',
@@ -339,6 +346,7 @@ class Call:
             'vm_route': ('vroute', lambda _r: self.vm_play(self.data.get('vidx', 0) + 1)),
             'act_conf': ('aconf', self.on_act_conf), 'act_more': ('amore', self.on_act_more),
             'act_num': ('anum', self.on_act_num), 'par_menu': ('pmenu', self.on_parent_menu),
+            'rm_num': ('rnum', self.on_remote_num),
         }
         if step in handlers and handlers[step][0] in p:
             return handlers[step][1](p[handlers[step][0]])
@@ -351,7 +359,7 @@ class Call:
                 'phones': self.phones, 'verify': self.verify, 'account': self.account,
                 'message': self.message, 'history': self.history,
                 'pay': self.pay_menu, 'reconnect': self.reconnect, 'stop': self.stop_alerts,
-                'voicemail': self.voicemail, 'parent': self.parent_menu,
+                'voicemail': self.voicemail, 'parent': self.parent_menu, 'remote': self.remote,
                 'alert': self.disconnect_alert}.get(mode, self.activate)()
 
     def on_hangup(self):
@@ -484,7 +492,8 @@ class Call:
 
     # ----- 1: activate -----
     def alert_choices(self, sub):
-        phones = [x for x in store.verified_phones(self.con, sub['id']) if x != self.phone]
+        room = self.data.get('rm') or self.phone  # never alert the room phone itself
+        phones = [x for x in store.verified_phones(self.con, sub['id']) if x != room]
         if sub['alert_phone'] in phones:
             phones.remove(sub['alert_phone'])
             phones.insert(0, sub['alert_phone'])
@@ -515,9 +524,9 @@ class Call:
             verified = set(store.verified_phones(self.con, sub['id']))
             extra = [x for x in (sub['alert_extra'] or '').split(',') if x in verified]
             backup = sub['alert_backup'] if sub['alert_backup'] in verified else None
-            return self.start_monitor(sub, self.last_alert_phone(), extra, backup)
+            return self.begin(sub, self.last_alert_phone(), extra, backup)
         n = store.norm_phone(value)
-        if not store.valid_phone(n):
+        if not store.valid_phone(n) or n == self.data.get('rm'):
             if self.retry():
                 return self.ask_alert_number(t(self.cfg, 'bad_number'))
             return hangup(self.cfg, t(self.cfg, 'goodbye'))
@@ -553,7 +562,7 @@ class Call:
             verified = set(store.verified_phones(self.con, sub['id']))
             extra = [x for x in (sub['alert_extra'] or '').split(',') if x in verified]
             backup = sub['alert_backup'] if sub['alert_backup'] in verified else None
-            return self.start_monitor(sub, self.last_alert_phone(), extra, backup)
+            return self.begin(sub, self.last_alert_phone(), extra, backup)
         if key.isdigit() and 1 <= int(key) <= len(choices) and key != '9':
             self.data.update({'ap': choices[int(key) - 1], 'ax': [], 'ab': None})
             return self.act_conf(sub)
@@ -575,7 +584,7 @@ class Call:
         if err:
             return err
         if key == '1':
-            return self.start_monitor(sub, self.data['ap'], self.data.get('ax'), self.data.get('ab'))
+            return self.begin(sub, self.data['ap'], self.data.get('ax'), self.data.get('ab'))
         if key == '2':
             self.reset_tries()
             return self.ask_alert_number()
@@ -614,6 +623,12 @@ class Call:
                 if self.data.get('ab') == phone:
                     self.data['ab'] = None
         return self.act_conf(sub, t(self.cfg, 'more_added'))
+
+    def begin(self, sub, alert_phone, extra=None, backup=None):
+        """Activation confirmed: monitor this call, or (2 -> 4) dial the room phone and monitor there."""
+        if self.data.get('rm'):
+            return self.remote_call(sub, alert_phone, extra, backup)
+        return self.start_monitor(sub, alert_phone, extra, backup)
 
     def start_monitor(self, sub, alert_phone, extra=None, backup=None, silent=False):
         room = f"s{sub['id']}-{self.phone}"[:40]
@@ -887,6 +902,53 @@ class Call:
         self.wake = True
         return hangup(self.cfg, t(self.cfg, 'rc_calling'))
 
+    # ----- 2 -> 4: connect the room phone from afar (outbound call that auto-answers) -----
+    def remote(self):
+        sub, intro, err = self.subscriber(auto_trial=True)
+        if err:
+            return err
+        if not self.cfg.get('reconnect_extension'):
+            return hangup(self.cfg, t(self.cfg, 'error'))
+        self.reset_tries()
+        self.save('rm_num')
+        return [ask('rnum', [intro, t(self.cfg, 'rm_ask')], mx=10, mn=1, timeout=10)]
+
+    def on_remote_num(self, value):
+        sub, _, err = self.subscriber()
+        if err:
+            return err
+        n = store.norm_phone(value)
+        if not store.valid_phone(n) or n == self.phone:
+            if self.retry():
+                self.save('rm_num')
+                return [ask('rnum', [t(self.cfg, 'bad_number'), t(self.cfg, 'rm_ask')], mx=10, mn=1, timeout=10)]
+            return hangup(self.cfg, t(self.cfg, 'goodbye'))
+        live = self.con.execute("SELECT 1 FROM sessions WHERE phone=? AND status='monitoring' AND ended IS NULL "
+                                "AND started>?", (n, self.now - 12 * 3600)).fetchone()
+        if live:
+            return hangup(self.cfg, t(self.cfg, 'rm_busy'))
+        self.data['rm'] = n
+        self.data['choices'] = self.alert_choices(sub)
+        self.reset_tries()
+        return self.ask_alert_number()  # from here on exactly as in 1, until begin()
+
+    def remote_call(self, sub, alert_phone, extra=None, backup=None):
+        room_phone = self.data['rm']
+        extra = [x for x in (extra or []) if x != alert_phone][:3]
+        backup = backup if backup != alert_phone else None
+        store.update_subscriber(self.con, sub['id'], alert_phone=alert_phone)
+        self.con.execute('UPDATE subscribers SET alert_extra=?, alert_backup=? WHERE id=?',
+                         (','.join(extra) or None, backup, sub['id']))
+        import core
+        ok, why = core.queue_reconnect(self.cfg, self.con, sub['id'], room_phone, self.call_id, self.phone, self.now,
+                                       settings={'ap': alert_phone, 'ax': extra, 'ab': backup})
+        if not ok:
+            return hangup(self.cfg, t(self.cfg, {'too_many': 'rc_too_many', 'no_balance': 'rc_no_balance'}.get(why, 'error')))
+        self.wake = True
+        self.data['al'] = [sub['id'], self.call_id, room_phone]
+        self.data['rc_since'] = self.now
+        return self.wait_prompt(t(self.cfg, 'rc_dialing'))
+
     # ----- the 'room disconnected' alert call (outbound to the parent) -----
     def disconnect_alert(self):
         row = self.con.execute("SELECT * FROM alerts WHERE kind='disconnected' AND alert_phone=? "
@@ -951,12 +1013,12 @@ class Call:
             self.data['room'] = live['room_id']
             self.save('rc_done')
             return [{'type': 'simpleMenu', 'name': 'rcd', 'enabledKeys': '0,2', 'times': 1, 'timeout': 7,
-                     'errorReturn': 'ERROR', 'files': [{'text': t(self.cfg, 'rc_ok')}]}]
+                     'errorReturn': 'ERROR', 'files': [{'text': t(self.cfg, 'rm_ok' if self.data.get('rm') else 'rc_ok')}]}]
         failed = self.con.execute("SELECT 1 FROM alerts WHERE kind='reconnect' AND subscriber_id=? AND created>=? "
                                   "AND state='failed'", (sid, since - 1)).fetchone()
         if failed or self.now - since > float(self.cfg.get('reconnect_wait_seconds', 100)):
             self.save(None)
-            return hangup(self.cfg, t(self.cfg, 'rc_failed'))
+            return hangup(self.cfg, t(self.cfg, 'rm_failed' if self.data.get('rm') else 'rc_failed'))
         return self.wait_prompt()
 
     def on_reconnect_done(self, key):
@@ -966,7 +1028,7 @@ class Call:
         return hangup(self.cfg, t(self.cfg, 'goodbye'))
 
     def resume_outbound(self):
-        """The room phone answered our reconnect call: resume monitoring without any prompts."""
+        """The room phone answered our call-back (reconnect, or 2 -> 4): monitor without any prompts."""
         row = self.con.execute("SELECT * FROM alerts WHERE kind='reconnect' AND alert_phone=? "
                                "AND state IN ('sent','demo','unknown','sending') AND created>? ORDER BY id DESC LIMIT 1",
                                (self.phone, self.now - 900)).fetchone()
@@ -974,13 +1036,18 @@ class Call:
             return [{'type': 'hangup'}]
         sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (row['subscriber_id'],)).fetchone()
         prev = self.con.execute('SELECT * FROM sessions WHERE call_id=?', (row['call_id'],)).fetchone()
-        if not sub or not prev or not prev['alert_phone'] or \
+        given = (json.loads(row['payload']) if row['payload'] else {}).get('settings')
+        if given:  # 2 -> 4: the alert numbers were chosen by the parent who asked for this call
+            alert_phone, ax, ab = given.get('ap'), given.get('ax'), given.get('ab')
+        else:
+            pd = json.loads(prev['data']) if prev and prev['data'] else {}
+            alert_phone, ax, ab = (prev['alert_phone'] if prev else None), pd.get('ax'), pd.get('ab')
+        if not sub or not alert_phone or \
                 not store.authorization(sub, self.day, self.cfg.get('enforce_active_expiry', False))[0]:
             return [{'type': 'hangup'}]
         self.con.execute("UPDATE alerts SET state='answered' WHERE id=?", (row['id'],))
         self.bind(sub)
-        pd = json.loads(prev['data']) if prev['data'] else {}
-        return self.start_monitor(sub, prev['alert_phone'], pd.get('ax'), pd.get('ab'), silent=True)
+        return self.start_monitor(sub, alert_phone, ax, ab, silent=True)
 
     # ----- noise history -----
     def allowed_subs(self):

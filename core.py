@@ -129,8 +129,9 @@ def settle(cfg, con, call_id, now=None):
     return 'empty'
 
 
-def queue_reconnect(cfg, con, sub_id, room_phone, prev_call_id, requested_by, now=None):
+def queue_reconnect(cfg, con, sub_id, room_phone, prev_call_id, requested_by, now=None, settings=None):
     """Ask Technoline to call the room phone into the monitoring extension (it must auto-answer).
+    settings: alert numbers for a new room ({ap, ax, ab}); without it the previous session's are reused.
 
     Returns (ok, reason)."""
     now = now or time.time()
@@ -147,7 +148,7 @@ def queue_reconnect(cfg, con, sub_id, room_phone, prev_call_id, requested_by, no
     con.execute('INSERT INTO alerts(unique_key,subscriber_id,call_id,kind,alert_phone,created,state,payload) '
                 'VALUES(?,?,?,?,?,?,?,?)',
                 (f'reconnect:{prev_call_id}:{int(now)}', sub_id, prev_call_id, 'reconnect', room_phone, now, 'pending',
-                 json.dumps({'by': requested_by})))
+                 json.dumps({'by': requested_by, **({'settings': settings} if settings else {})})))
     store.audit(con, 'reconnect', {'id': sub_id, 'room_phone': room_phone, 'by': requested_by})
     return True, ''
 

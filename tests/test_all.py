@@ -740,6 +740,57 @@ class AlertReconnectTests(Base):
         r = self.call({**self.parent, 'rcd': '2'}, 'alert')
         self.assertEqual(r[-1], {'type': 'noiseMonitorJoin', 'name': 'join', 'roomId': f's{sid}-0521234567'})
 
+    def test_remote_room_phone_from_parent_menu(self):
+        self.cfg.update({'reconnect_extension': '4321', 'reconnect_charge': False})
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0501112222')
+            store.add_verified(self.con, sid, '0509998888', 'admin')
+        parent = {'PBXphone': '0501112222', 'PBXnum': PBX, 'PBXcallId': 'P1', 'PBXcallStatus': 'CALL'}
+        self.assertIn('מרחוק', self.call(parent, 'parent')[0]['files'][0]['text'])
+        self.assertEqual(self.call({**parent, 'pmenu': '4'}, 'parent')[-1]['name'], 'rnum')
+        self.assertEqual(self.call({**parent, 'rnum': '0501112222'})[-1]['name'], 'rnum')  # own phone: not the room
+        self.assertEqual(self.call({**parent, 'rnum': '0521234567'})[-1]['name'], 'anum')  # then exactly as in 1
+        self.assertEqual(self.call({**parent, 'anum': '0521234567'})[-1]['name'], 'anum')  # room phone can't get alerts
+        self.assertEqual(self.call({**parent, 'anum': '0509998888'})[-1]['name'], 'aconf')
+        r = self.call({**parent, 'aconf': '1'})
+        self.assertEqual(r[-1]['name'], 'rcw')
+        self.assertNotIn('noiseMonitor', [c['type'] for c in r])  # the parent's own call is not monitored
+        row = self.con.execute("SELECT * FROM alerts WHERE kind='reconnect'").fetchone()
+        self.assertEqual(row['alert_phone'], '0521234567')
+        self.assertEqual(json.loads(row['payload'])['settings']['ap'], '0509998888')
+        with self.con:
+            self.con.execute("UPDATE alerts SET state='sent' WHERE kind='reconnect'")
+        room = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'R1', 'PBXcallStatus': 'CALL',
+                'PBXcallType': 'out'}
+        r = self.call(room)  # the room phone auto-answers: silent monitoring with the parent's choices
+        self.assertEqual([c['type'] for c in r], ['noiseMonitor'])
+        self.assertEqual(r[0]['roomId'], f's{sid}-0521234567')
+        self.assertEqual(self.con.execute("SELECT alert_phone FROM sessions WHERE call_id='R1'").fetchone()[0],
+                         '0509998888')
+        r = self.call({**parent, 'rcw': 'WAIT'})
+        self.assertIn('הופעל בהצלחה', r[0]['files'][0]['text'])
+        r = self.call({**parent, 'rcd': '2'})
+        self.assertEqual(r[-1], {'type': 'noiseMonitorJoin', 'name': 'join', 'roomId': f's{sid}-0521234567'})
+
+    def test_remote_room_phone_busy_and_failed(self):
+        self.cfg.update({'reconnect_extension': '4321', 'reconnect_charge': False})
+        sid = self.setup_dropped()
+        with self.con:
+            store.add_phone(self.con, sid, '0501112222')  # the parent may use the service from their phone
+        parent = {'PBXphone': '0501112222', 'PBXnum': PBX, 'PBXcallId': 'P2', 'PBXcallStatus': 'CALL'}
+        self.call(parent, 'remote')
+        self.call({**parent, 'rnum': '0531234567'})
+        self.call({**parent, 'anum': '0501112222'})  # the parent's own phone: verified by calling from it
+        self.call({**parent, 'aconf': '1'})
+        r = self.call({**parent, 'rcw': 'WAIT'}, now=time.time() + 200)  # the room phone never answered
+        self.assertIn('מענה אוטומטי', r[0]['files'][0]['text'])
+        with self.con:  # a room phone that is already monitoring is not dialled again
+            self.con.execute("UPDATE sessions SET status='monitoring', ended=NULL, started=? WHERE call_id='r1'",
+                             (time.time(),))
+        parent['PBXcallId'] = 'P3'
+        self.call(parent, 'remote')
+        self.assertIn('כבר מחובר', self.call({**parent, 'rnum': '0521234567'})[0]['files'][0]['text'])
+
     def test_failure_after_timeout(self):
         self.setup_dropped()
         self.call(self.parent, 'alert')
