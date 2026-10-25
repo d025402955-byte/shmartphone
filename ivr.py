@@ -51,7 +51,16 @@ TEXTS = {
             'אחרי כל התראה אפשר להתקשר למערכת ולשמוע מה קרה, ואחרי ניתוק גם לחדש את הניטור בחיוג לטלפון שבחדר. '
             'כדי שהחיוג החוזר יעבוד, יש להגדיר בטלפון שבחדר מענה אוטומטי לשיחות. '
             'החיבור בחיוג החוזר שקט לגמרי, ולא יושמע בחדר שום צליל. '
-            'השירות הוא עזר בלבד, ואינו מחליף השגחה של מבוגר. תודה שבחרתם בשְׁמַרְטַפוֹן.',
+            'השירות הוא עזר בלבד, ואינו מחליף השגחה של מבוגר.',
+    'info_thanks': 'תודה שבחרתם בשְׁמַרְטַפוֹן.',
+    'info_trial': 'מנויים חדשים מקבלים תקופת ניסיון חינם של {days} ימים.',
+    'info_plans': 'אחרי תקופת הניסיון אפשר לבחור באחד ממסלולי המנוי: '
+                  'מנוי חודשי ב-{monthly} שקלים לחודש, בהוראת קבע באשראי. '
+                  'מנוי שנתי ב-{annual} שקלים, בתשלום אחד. '
+                  'או פיקדון לפי שימוש, {price} לכל דקת ניטור, בטעינה של {deposits} שקלים. '
+                  'במנוי החודשי והשנתי ההתראות והניטור כלולים ללא הגבלה. '
+                  'התשלום באשראי, כאן בטלפון: בתפריט הראשי הקישו 4, ואחר כך 5. '
+                  'את יתרת הפיקדון אפשר לשמוע בתפריט ניהול המנוי, מקש 7.',
     'welcome_trial': 'ברוכים הבאים לשְׁמַרְטַפוֹן. הופעלה עבורכם תקופת ניסיון של {days} ימים.',
     'not_registered': 'מספר הטלפון שממנו התקשרתם אינו רשום בשירות שְׁמַרְטַפוֹן.',
     'disabled': 'המנוי שלכם אינו פעיל.',
@@ -1171,7 +1180,18 @@ class Call:
     # ----- 3: info -----
     def info(self):
         self.save(None)
-        return hangup(self.cfg, t(self.cfg, 'info'))
+        parts = [t(self.cfg, 'info')]
+        days = int(self.cfg.get('auto_trial_days', 0) or 0)
+        if days:
+            parts.append(t(self.cfg, 'info_trial', days=days))
+        if self.payments_on():
+            monthly, annual = self.prices()
+            deps = [self.money(x) for x in self.deposits()]
+            parts.append(t(self.cfg, 'info_plans', monthly=self.money(monthly), annual=self.money(annual),
+                           price=self.price_words(),
+                           deposits=(', '.join(deps[:-1]) + ' או ' + deps[-1]) if len(deps) > 1 else ''.join(deps)))
+        parts.append(t(self.cfg, 'info_thanks'))
+        return hangup(self.cfg, *parts)
 
     # ----- 4: phones -----
     def phones(self, prefix=None):
