@@ -1077,3 +1077,16 @@ class NiqqudTests(Base):
         self.assertEqual(ivr.t(cfg, 'notice_noise_one', hh='23:40'), 'בְּשָׁעָה 23:40 זֻהָה רַעַשׁ בְּחֶדֶר הַתִּינוֹק.')
         self.assertIn('שְׁמַרְטַפוֹן', core.text(cfg, 'alert_noise'))
         self.assertEqual(ivr.t(cfg, 'alerts_menu', mode='x')[:3], 'סוג')  # missing key: plain text
+
+
+class EarlyHangupMessageTests(Base):
+    def test_message_kept_when_caller_hangs_up_before_hash(self):
+        p = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'h1', 'PBXcallStatus': 'CALL'}
+        with self.con:
+            ivr.handle(self.cfg, self.con, p, DAY, 'menu')
+        with self.con:
+            r = ivr.handle(self.cfg, self.con, {**p, 'menu': '9'}, DAY, 'menu')[0]
+        self.assertEqual(r[0]['fileName'], 'msg_h1')
+        with self.con:
+            ivr.handle(self.cfg, self.con, {**p, 'menu': '9', 'PBXcallStatus': 'HANGUP'}, DAY, 'menu')
+        self.assertEqual(self.con.execute('SELECT file_name FROM messages').fetchone()[0], 'msg_h1')

@@ -28,7 +28,7 @@ import niqqud
 import store
 
 MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history', 'pay', 'reconnect', 'alert', 'stop', 'voicemail', 'parent')
-MENU_KEYS = {'1': 'activate', '2': 'parent', '3': 'info', '6': 'account', '9': 'message', '0': 'voicemail'}
+MENU_KEYS = {'1': 'activate', '2': 'parent', '3': 'info', '4': 'account', '9': 'message', '0': 'voicemail'}
 PARENT_KEYS = {'1': 'listen', '2': 'history', '3': 'stop'}
 HEB_MONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר',
               'נובמבר', 'דצמבר']
@@ -36,10 +36,8 @@ VERIFY_TTL = 30 * 60
 
 TEXTS = {
     'menu': 'ברוכים הבאים לשְׁמַרְטַפוֹן, המערכת החכמה שתסייע בשמירה על ילדיכם ותעניק לכם שקט נפשי כאשר אתם יוצאים מהבית. '
-            'לשימוש בטלפון זה לחדר התינוק, הקישו 1. להאזנה לחדר התינוק, לרעשים ולהפסקת התראות, הקישו 2. '
-            'להסבר ולהוראות הפעלה, הקישו 3. '
-            'לניהול חשבון המנוי והטלפונים המורשים, הקישו 6. '
-            'להשארת הודעה לשירות הלקוחות, הקישו 9.',
+            'לשימוש בטלפון זה לחדר התינוק, הקישו 1. לשליטה מרחוק, האזנה לחדר, רעשים והפסקת התראות, הקישו 2. '
+            'להסברים, הקישו 3. לניהול המנוי, הקישו 4. לשליחת הודעה, הקישו 9.',
     'info': 'שְׁמַרְטַפוֹן הוא שירות שמאפשר לכם לצאת מהבית בשקט, כשהילדים ישנים. '
             'משאירים בחדר טלפון, מתקשרים ממנו למערכת, ומקישים 1 להפעלת השְׁמַרְטַפוֹן. '
             'המערכת מקשיבה לחדר כל הזמן. כשנשמע בכי או רעש, אנחנו מתקשרים מיד למספר שבחרתם, '
@@ -47,7 +45,7 @@ TEXTS = {
             'בהפעלה הראשונה מקישים את המספר שיקבל את ההתראות, והמערכת שולחת אליו קוד לאימות. '
             'אפשר לאמת כמה מספרים, למשל של שני ההורים או של שמרטף. '
             'כדי להקשיב לחדר בכל רגע, מתקשרים מטלפון מאומת ומקישים 2. '
-            'טלפונים נוספים שמותר להפעיל מהם את השירות מוסיפים בניהול החשבון, מקש 6. '
+            'טלפונים נוספים שמותר להפעיל מהם את השירות מוסיפים בניהול המנוי, מקש 4. '
             'חשוב: השאירו את הטלפון שבחדר מחובר למטען, בקרבת מקום השינה, ואל תנתקו את השיחה. '
             'ספקים מסוימים מנתקים שיחות ארוכות אחרי כשעה. אם זה קורה, נתקשר אליכם להודיע שהקו התנתק. '
             'אחרי כל התראה אפשר להתקשר למערכת ולשמוע מה קרה, ואחרי ניתוק גם לחדש את הניטור בחיוג לטלפון שבחדר. '
@@ -94,7 +92,7 @@ TEXTS = {
     'al_keys_free': 'לחיוג לטלפון שבחדר וחידוש הניטור הקישו 1. לסיום הקישו 0.',
     'rc_keys_free': 'לחיוג לטלפון שבחדר והפעלת הניטור מחדש הקישו 1. לסיום הקישו 0.',
     'rc_no_balance': 'החיוג לטלפון שבחדר עולה כשקל, ומחויב מהפיקדון. אין מספיק יתרה בפיקדון. '
-                     'לטעינת פיקדון התקשרו מהטלפון הרשום, הקישו 6, אחר כך 5, ואחר כך 3.',
+                     'לטעינת פיקדון התקשרו מהטלפון הרשום, הקישו 4, אחר כך 5, ואחר כך 3.',
     'vm_pin': 'הקישו את הקוד.',
     'vm_bad_pin': 'הקוד שגוי.',
     'vm_none': 'אין הודעות.',
@@ -341,7 +339,8 @@ class Call:
 
     def on_hangup(self):
         if self.sess:
-            if self.sess['step'] == 'recording' and self.p.get('FILEID_rec') and not self.data.get('saved'):
+            if self.sess['step'] == 'recording' and not self.data.get('saved') and \
+                    (self.p.get('FILEID_rec') or self.data.get('rec_name')):
                 self.store_message()
             self.con.execute("UPDATE sessions SET ended=COALESCE(ended,?) WHERE call_id=?", (self.now, self.call_id))
             if self.sess['mon_start']:
@@ -1079,7 +1078,8 @@ class Call:
                 return self.voicemail(t(self.cfg, 'vm_bad_pin'))
             self.save(None)
             return hangup(self.cfg, t(self.cfg, 'vm_bad_pin'))
-        rows = self.con.execute("SELECT id, state FROM messages WHERE file_id IS NOT NULL AND state!='deleted' "
+        rows = self.con.execute("SELECT id, state FROM messages WHERE (file_id IS NOT NULL OR file_name IS NOT NULL) "
+                                "AND state!='deleted' "
                                 "ORDER BY id DESC LIMIT 100").fetchall()
         if not rows:
             self.save(None)
@@ -1416,8 +1416,11 @@ class Call:
         sub = store.find_by_phone(self.con, self.phone)
         self.save('recording', subscriber_id=sub['id'] if sub else None, mode='message')
         folder = self.cfg.get('messages_folder')
+        # a known file name lets us keep the message even if the caller hangs up before '#' and confirming
+        self.data['rec_name'] = 'msg_' + re.sub(r'[^A-Za-z0-9_-]', '', self.call_id)[-40:]
+        self.save('recording')
         return [{'type': 'record', 'name': 'rec', 'max': 180, 'min': 2, 'confirm': 'confirmOnly',
-                 **({'saveFolder': str(folder)} if folder else {}),
+                 'fileName': self.data['rec_name'], **({'saveFolder': str(folder)} if folder else {}),
                  'hangupSave': 'yes', 'files': [{'text': t(self.cfg, 'message_prompt')}]}]
 
     def store_message(self):
@@ -1429,7 +1432,7 @@ class Call:
         self.con.execute('INSERT INTO messages(subscriber_id,phone,call_id,file_id,file_name,duration,created,state) '
                          'VALUES(?,?,?,?,?,?,?,?)',
                          (self.sess['subscriber_id'] if self.sess else None, self.phone, self.call_id,
-                          p.get('FILEID_rec'), p.get('FILE_rec') or p.get('rec'), dur, self.now,
+                          p.get('FILEID_rec'), p.get('FILE_rec') or p.get('rec') or self.data.get('rec_name'), dur, self.now,
                           'pending' if self.cfg.get('smtp') else 'stored'))
         self.data['saved'] = True
         self.wake = True
