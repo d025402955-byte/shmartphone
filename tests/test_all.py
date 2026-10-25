@@ -108,7 +108,7 @@ class IvrTests(Base):
 
     def test_unknown_gets_trial_and_must_verify_first(self):
         r = self.call('0521234567')
-        self.assertEqual(self.ask_name(r), 'vnum')
+        self.assertEqual(self.ask_name(r), 'anum')
         sub = store.find_by_phone(self.con, '0521234567')
         self.assertEqual((sub['status'], sub['expires']), ('trial', '2026-10-30'))
 
@@ -122,8 +122,8 @@ class IvrTests(Base):
     def test_activate_requires_verified_then_code_flow(self):
         sid = self.sub_with()
         r = self.call('0521234567')
-        self.assertEqual(self.ask_name(r), 'vnum')
-        r = self.send(vnum='0501112222')
+        self.assertEqual(self.ask_name(r), 'anum')
+        r = self.send(anum='0501112222')  # not verified yet: a code is sent first
         self.assertEqual(self.ask_name(r), 'vcode')
         self.assertTrue(self.woke)
         al = self.con.execute("SELECT * FROM alerts WHERE kind='verify'").fetchone()
@@ -132,10 +132,8 @@ class IvrTests(Base):
         self.assertIn(', '.join(code), json.loads(al['payload'])['text'])
         r = self.send(vcode='0000' if code != '0000' else '1111')
         self.assertEqual(self.ask_name(r), 'vcode')
-        r = self.send(vcode=code)  # correct -> continues to activate with one choice
-        self.assertEqual(self.ask_name(r), 'apick')
+        r = self.send(vcode=code)  # correct -> straight to activate / change / add
         self.assertEqual(store.verified_phones(self.con, sid), ['0501112222'])
-        r = self.send(apick='1')
         self.assertEqual(self.ask_name(r), 'aconf')  # activate / change / add another / add fallback
         r = self.send(aconf='1')
         self.assertEqual(self.types(r), ['simpleMessage', 'noiseMonitor'])
@@ -183,13 +181,12 @@ class IvrTests(Base):
             store.add_verified(self.con, sid, '0502222222', 'admin')
             store.add_verified(self.con, sid, '0521234567', 'admin')  # caller itself is excluded
         r = self.call('0521234567')
-        self.assertIn(sp('0501111111'), spoken(r[0]))
-        self.assertIn(sp('0502222222'), spoken(r[0]))
-        self.assertNotIn(sp('0521234567'), spoken(r[0]))
-        r = self.send(apick='9')
-        self.assertEqual(self.ask_name(r), 'vnum')
+        self.assertNotIn(sp('0501111111'), spoken(r[0]))  # numbers are not read out
+        r = self.send(anum='0539999999')  # an unverified number -> verification code
+        self.assertEqual(self.ask_name(r), 'vcode')
         self.call('0521234567', call='c2')
-        self.send(apick='2')
+        r = self.send(anum='0502222222')
+        self.assertEqual(self.ask_name(r), 'aconf')
         r = self.send(aconf='1')
         self.assertEqual(r[-1]['type'], 'noiseMonitor')
 
@@ -199,7 +196,7 @@ class IvrTests(Base):
             store.add_verified(self.con, sid, '0501112222', 'admin')
         self.assertEqual(self.call('0501112222', mode='listen', call='L0')[-1]['type'], 'hangup')  # nothing active
         self.call('0521234567', call='M1')
-        self.send(apick='1')
+        self.send(anum='0501112222')
         self.send(aconf='1')
         r = self.call('0501112222', mode='listen', call='L1')
         self.assertEqual(r[-1], {'type': 'noiseMonitorJoin', 'name': 'join', 'roomId': f's{sid}-0521234567'})
@@ -269,9 +266,9 @@ class EventTests(Base):
         with self.con:
             ivr.handle(self.cfg, self.con, p, DAY)
         with self.con:
-            ivr.handle(self.cfg, self.con, {**p, 'apick': '1'}, DAY)
+            ivr.handle(self.cfg, self.con, {**p, 'anum': '0501112222'}, DAY)
         with self.con:
-            ivr.handle(self.cfg, self.con, {**p, 'apick': '1', 'aconf': '1'}, DAY)
+            ivr.handle(self.cfg, self.con, {**p, 'anum': '0501112222', 'aconf': '1'}, DAY)
         return sid
 
     def ev(self, kind, **kw):
@@ -458,9 +455,9 @@ class HistoryTests(Base):
         with self.con:
             ivr.handle(self.cfg, self.con, p, DAY)
         with self.con:
-            ivr.handle(self.cfg, self.con, {**p, 'apick': '1'}, DAY)
+            ivr.handle(self.cfg, self.con, {**p, 'anum': '0501112222'}, DAY)
         with self.con:
-            ivr.handle(self.cfg, self.con, {**p, 'apick': '1', 'aconf': '1'}, DAY)
+            ivr.handle(self.cfg, self.con, {**p, 'anum': '0501112222', 'aconf': '1'}, DAY)
         room = f's{sid}-0521234567'
         now = time.time()
         base = {'time': now, 'roomId': room, 'callId': 'c1', 'num': PBX, 'eventId': 'ev1'}
@@ -625,8 +622,8 @@ class ReconnectTests(Base):
             with self.con:
                 return ivr.handle(self.cfg, self.con, p, DAY, mode)[0]
         call(room)
-        call({**room, 'apick': '1'})
-        call({**room, 'apick': '1', 'aconf': '1'})
+        call({**room, 'anum': '0501112222'})
+        call({**room, 'anum': '0501112222', 'aconf': '1'})
         with self.con:  # the provider cuts the room call
             core.handle_event(self.cfg, self.con, {'event': 'disconnected', 'time': time.time(), 'callId': 'r1',
                                                    'roomId': f's{sid}-0521234567', 'num': PBX, 'reason': 'hangup'},
@@ -689,8 +686,8 @@ class AlertReconnectTests(Base):
             store.add_verified(self.con, sid, '0501112222', 'admin')
         self.room = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'r1', 'PBXcallStatus': 'CALL'}
         self.call(self.room)
-        self.call({**self.room, 'apick': '1'})
-        self.call({**self.room, 'apick': '1', 'aconf': '1'})
+        self.call({**self.room, 'anum': '0501112222'})
+        self.call({**self.room, 'anum': '0501112222', 'aconf': '1'})
         with self.con:
             core.handle_event(self.cfg, self.con, {'event': 'disconnected', 'time': time.time(), 'callId': 'r1',
                                                    'roomId': f's{sid}-0521234567', 'num': PBX, 'reason': 'hangup'},
@@ -793,8 +790,8 @@ class PingAndDepositTests(Base):
 
     def start_room(self):
         self.ivr('0521234567', 'c1')
-        self.ivr('0521234567', 'c1', apick='1')
-        return self.ivr('0521234567', 'c1', apick='1', aconf='1')
+        self.ivr('0521234567', 'c1', anum='0501112222')
+        return self.ivr('0521234567', 'c1', anum='0501112222', aconf='1')
 
     def test_start_says_alert_phone(self):
         r = self.start_room()
@@ -1019,9 +1016,9 @@ class LastConnectionTests(Base):
         p = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'l1', 'PBXcallStatus': 'CALL'}
         with self.con:
             r = ivr.handle(self.cfg, self.con, p, DAY)[0]
-        self.assertIn('הקישו 0', ' '.join(f.get('text', '') for f in r[-1]['files']))
+        self.assertIn('הקישו 1 וסולמית', ' '.join(f.get('text', '') for f in r[-1]['files']))
         with self.con:
-            r = ivr.handle(self.cfg, self.con, {**p, 'apick': '0'}, DAY)[0]
+            r = ivr.handle(self.cfg, self.con, {**p, 'anum': '1'}, DAY)[0]
         self.assertEqual(r[-1]['type'], 'noiseMonitor')
         self.assertEqual(self.con.execute("SELECT alert_phone FROM sessions WHERE call_id='l1'").fetchone()[0],
                          '0502222222')
@@ -1038,22 +1035,21 @@ class MoreNumbersTests(Base):
         with self.con:
             call()
         with self.con:
-            r = call(apick='1')
+            r = call(anum='0501111111')
         self.assertEqual(r[0]['name'], 'aconf')
         with self.con:
-            r = call(apick='1', aconf='3')  # add another number
+            r = call(anum='0501111111', aconf='3')  # add another number
         self.assertEqual(r[0]['name'], 'amore')
         with self.con:
-            r = call(apick='1', aconf='3', amore='1')
+            r = call(anum='0501111111', aconf='3', amore='0502222222')
         self.assertEqual(r[0]['name'], 'aconf')
         with self.con:
-            call(apick='1', aconf='4')
+            call(anum='0501111111', aconf='4')
         with self.con:
-            r = call(apick='1', aconf='4', amore='1')  # fallback = the remaining number
-        for ph in ('0501111111', '0502222222', '0503333333'):
-            self.assertIn(sp(ph), spoken(r[0]))
+            r = call(anum='0501111111', aconf='4', amore='0503333333')  # fallback
+        self.assertEqual(r[0]['name'], 'aconf')
         with self.con:
-            r = call(apick='1', aconf='1')
+            r = call(anum='0501111111', aconf='1')
         self.assertEqual(r[-1]['type'], 'noiseMonitor')
         room = r[-1]['roomId']
         e = {'event': 'monitorStart', 'time': time.time(), 'roomId': room, 'callId': 'c1', 'num': PBX}

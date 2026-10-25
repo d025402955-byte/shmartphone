@@ -68,6 +68,9 @@ TEXTS = {
     **{f'press_{d}': f'הקישו {d}.' for d in range(10)},
     'pick_new': 'לאימות מספר חדש הקישו 9.',
     'pick_last': 'להתחברות עם פרטי ההתחברות האחרונה, הקישו 0.',
+    'num_last': 'להתחברות עם פרטי ההתחברות האחרונה, הקישו 1 וסולמית. למספר אחר, הקישו את המספר ובסיומו סולמית.',
+    'num_only': 'הקישו את מספר הטלפון שיקבל את ההתראות, ובסיומו סולמית.',
+    'more_ask': 'הקישו את המספר, ובסיומו סולמית. לחזרה הקישו סולמית.',
     'conf_to': 'ההתראות יישלחו למספר',
     'conf_and': 'וגם למספר',
     'conf_backup': 'ואם ההתראה לא תגיע, למספר',
@@ -319,6 +322,7 @@ class Call:
             'al_mode': ('alt', self.on_alert_mode), 'pay_dep': ('pdep', self.on_deposit_pick),
             'vm_pin': ('vpin', self.on_vm_pin), 'vm_nav': ('vnav', self.on_vm_nav),
             'act_conf': ('aconf', self.on_act_conf), 'act_more': ('amore', self.on_act_more),
+            'act_num': ('anum', self.on_act_num),
         }
         if step in handlers and handlers[step][0] in p:
             return handlers[step][1](p[handlers[step][0]])
@@ -463,14 +467,35 @@ class Call:
         if err:
             return err
         intro = intro_override or intro
-        choices = self.alert_choices(sub)
-        if not choices:
-            self.data['next'] = 'activate'
-            return self.ask_verify_number(sub, [intro, t(self.cfg, 'no_verified')])
-        self.data['choices'] = choices
+        self.data['choices'] = self.alert_choices(sub)
         self.reset_tries()
-        self.save('act_pick')
-        return [self.pick_prompt(choices, intro)]
+        return self.ask_alert_number(intro)
+
+    def ask_alert_number(self, prefix=None):
+        """'1#' = last details; otherwise type the alert number and '#'. No numbers are read out."""
+        self.save('act_num')
+        key = 'num_last' if self.last_alert_phone() else 'num_only'
+        return [ask('anum', [prefix, t(self.cfg, key)], mx=10, mn=1, timeout=10)]
+
+    def on_act_num(self, value):
+        sub, _, err = self.subscriber()
+        if err:
+            return err
+        if value == '1' and self.last_alert_phone():
+            verified = set(store.verified_phones(self.con, sub['id']))
+            extra = [x for x in (sub['alert_extra'] or '').split(',') if x in verified]
+            backup = sub['alert_backup'] if sub['alert_backup'] in verified else None
+            return self.start_monitor(sub, self.last_alert_phone(), extra, backup)
+        n = store.norm_phone(value)
+        if not store.valid_phone(n):
+            if self.retry():
+                return self.ask_alert_number(t(self.cfg, 'bad_number'))
+            return hangup(self.cfg, t(self.cfg, 'goodbye'))
+        if n in store.verified_phones(self.con, sub['id']):
+            self.data.update({'ap': n, 'ax': [], 'ab': None})
+            return self.act_conf(sub)
+        self.data['next'] = 'use'  # verify first, then continue with it as the alert number
+        return self.start_verify(sub, n)
 
     def last_alert_phone(self):
         sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (self.sess['subscriber_id'],)).fetchone() \
@@ -512,14 +537,8 @@ class Call:
 
     # ----- after choosing the alert number: activate / change / add another / add a fallback -----
     def act_conf(self, sub, prefix=None):
-        files = [prefix, t(self.cfg, 'conf_to'), {'digits': self.data['ap']}]
-        for x in self.data.get('ax') or []:
-            files += [t(self.cfg, 'conf_and'), {'digits': x}]
-        if self.data.get('ab'):
-            files += [t(self.cfg, 'conf_backup'), {'digits': self.data['ab']}]
-        files.append(t(self.cfg, 'conf_keys'))
         self.save('act_conf')
-        return [ask('aconf', files, timeout=8)]
+        return [ask('aconf', [prefix, t(self.cfg, 'conf_keys')], timeout=8)]
 
     def on_act_conf(self, key):
         sub, _, err = self.subscriber()
@@ -528,7 +547,8 @@ class Call:
         if key == '1':
             return self.start_monitor(sub, self.data['ap'], self.data.get('ax'), self.data.get('ab'))
         if key == '2':
-            return self.activate()
+            self.reset_tries()
+            return self.ask_alert_number()
         if key in ('3', '4'):
             if key == '3' and len(self.data.get('ax') or []) >= 3:
                 return self.act_conf(sub, t(self.cfg, 'more_max'))
@@ -537,32 +557,22 @@ class Call:
             return self.act_conf(sub, t(self.cfg, 'bad_key'))
         return hangup(self.cfg, t(self.cfg, 'goodbye'))
 
-    def pick_more(self, sub, kind):
-        used = {self.phone, self.data.get('ap'), self.data.get('ab'), *(self.data.get('ax') or [])}
-        cands = [x for x in store.verified_phones(self.con, sub['id']) if x not in used][:8]
+    def pick_more(self, sub, kind, prefix=None):
         self.data['more_kind'] = kind
-        if not cands:
-            self.data['next'] = 'more'
-            return self.ask_verify_number(sub, [])
-        self.data['more_list'] = cands
         self.save('act_more')
-        files = []
-        for i, x in enumerate(cands, 1):
-            files += [self.choice(i, 'more_pick'), {'digits': x}]
-        files.append(t(self.cfg, 'more_new'))
-        return [ask('amore', files)]
+        return [ask('amore', [prefix, t(self.cfg, 'more_ask')], mx=10, mn=1, timeout=10)]
 
-    def on_act_more(self, key):
+    def on_act_more(self, value):
         sub, _, err = self.subscriber()
         if err:
             return err
-        cands = self.data.get('more_list', [])
-        if key.isdigit() and 1 <= int(key) <= len(cands) and key != '9':
-            return self.add_more(sub, cands[int(key) - 1])
-        if key == '9':
-            self.data['next'] = 'more'
-            return self.ask_verify_number(sub, [])
-        return self.act_conf(sub)
+        n = store.norm_phone(value)
+        if not store.valid_phone(n):
+            return self.act_conf(sub, t(self.cfg, 'bad_number') if value not in ('', '0') else None)
+        if n in store.verified_phones(self.con, sub['id']):
+            return self.add_more(sub, n)
+        self.data['next'] = 'more'
+        return self.start_verify(sub, n)
 
     def add_more(self, sub, phone):
         if phone and phone != self.data.get('ap'):
@@ -656,6 +666,9 @@ class Call:
                 return [ask('vnum', [t(self.cfg, 'bad_number'), t(self.cfg, 'ask_verify_number')], mx=10, mn=9,
                             timeout=6, confirm='digits', skip=True)]
             return hangup(self.cfg, t(self.cfg, 'goodbye'))
+        return self.start_verify(sub, n)
+
+    def start_verify(self, sub, n):
         if n == self.phone:  # calling from that phone proves it
             store.add_verified(self.con, sub['id'], n, 'caller')
             return self.verified_continue(sub, n)
@@ -706,6 +719,9 @@ class Call:
         nxt = self.data.pop('next', None)
         if nxt == 'more' and self.data.get('ap'):
             return self.add_more(sub, phone)
+        if nxt == 'use' and phone:
+            self.data.update({'ap': phone, 'ax': [], 'ab': None})
+            return self.act_conf(sub, t(self.cfg, 'verified_ok'))
         if nxt == 'activate':
             self.save(None)
             return self.activate(intro_override=t(self.cfg, 'verified_ok'))
