@@ -16,6 +16,14 @@ import nedarim  # noqa: E402
 import store  # noqa: E402
 
 DAY = datetime.date(2026, 10, 23)
+
+
+def spoken(cmd):
+    return ' '.join(f.get('text', '') for f in cmd.get('files', []))
+
+
+def sp(phone):
+    return ' '.join(phone)
 PBX = '0765674200'
 
 
@@ -175,7 +183,9 @@ class IvrTests(Base):
             store.add_verified(self.con, sid, '0502222222', 'admin')
             store.add_verified(self.con, sid, '0521234567', 'admin')  # caller itself is excluded
         r = self.call('0521234567')
-        self.assertEqual(sum(1 for f in r[0]['files'] if 'digits' in f), 2)
+        self.assertIn(sp('0501111111'), spoken(r[0]))
+        self.assertIn(sp('0502222222'), spoken(r[0]))
+        self.assertNotIn(sp('0521234567'), spoken(r[0]))
         r = self.send(apick='9')
         self.assertEqual(self.ask_name(r), 'vnum')
         self.call('0521234567', call='c2')
@@ -788,7 +798,7 @@ class PingAndDepositTests(Base):
 
     def test_start_says_alert_phone(self):
         r = self.start_room()
-        self.assertIn({'digits': '0501112222'}, r[0]['files'])
+        self.assertIn(sp('0501112222'), spoken(r[0]))
         self.assertNotIn('maxDuration', r[-1])
 
     def test_ping_payload_and_fallback(self):
@@ -986,7 +996,7 @@ class VoicemailTests(Base):
         with self.con:
             r = call(menu='0', vpin='12345')
         self.assertIn({'fileName': 'f.wav'}, r[0]['files'])
-        self.assertIn({'digits': '0521234567'}, r[0]['files'])
+        self.assertIn(sp('0521234567'), spoken(r[0]))
         with self.con:
             r = call(menu='0', vpin='12345', vnav='7')
         self.assertEqual(self.con.execute('SELECT state FROM messages').fetchone()[0], 'deleted')
@@ -1040,8 +1050,8 @@ class MoreNumbersTests(Base):
             call(apick='1', aconf='4')
         with self.con:
             r = call(apick='1', aconf='4', amore='1')  # fallback = the remaining number
-        texts = [f.get('digits') for f in r[0]['files'] if f.get('digits')]
-        self.assertEqual(len(texts), 3)
+        for ph in ('0501111111', '0502222222', '0503333333'):
+            self.assertIn(sp(ph), spoken(r[0]))
         with self.con:
             r = call(apick='1', aconf='1')
         self.assertEqual(r[-1]['type'], 'noiseMonitor')

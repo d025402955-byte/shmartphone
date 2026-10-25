@@ -1456,10 +1456,36 @@ def back_to_menu(c, resp):
     return out + c.menu(notices=False)
 
 
+def merge_files(resp):
+    """Join neighbouring text / digits / number items into one text: the PBX skipped short texts that came right
+    after a digits item ("press 1" between phone numbers was never heard)."""
+    for cmd in resp:
+        files = cmd.get('files')
+        if not files or not any(isinstance(f, dict) and ('digits' in f or 'number' in f) for f in files):
+            continue
+        out, buf = [], []
+        for f in files:
+            if isinstance(f, dict) and set(f) <= {'text', 'digits', 'number'} and len(f) == 1:
+                if 'digits' in f:
+                    buf.append(' '.join(str(f['digits'])))
+                else:
+                    buf.append(str(f.get('text', f.get('number', ''))))
+                continue
+            if buf:
+                out.append({'text': ' '.join(x for x in buf if x)})
+                buf = []
+            out.append(f)
+        if buf:
+            out.append({'text': ' '.join(x for x in buf if x)})
+        cmd['files'] = out
+    return resp
+
+
 def handle(cfg, con, p, day, mode='activate', now=None):
     """Returns (commands, wake_worker)."""
     c = Call(cfg, con, p, day, now or time.time())
     resp = c.run(mode if mode in MODES else 'activate')
     if mode == 'menu':
         resp = back_to_menu(c, resp)
-    return apply_voice(cfg, resp), c.wake
+    resp = apply_voice(cfg, resp)
+    return (merge_files(resp) if not cfg.get('voice') else resp), c.wake
