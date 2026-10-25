@@ -666,7 +666,7 @@ class ReconnectTests(Base):
             self.con.execute("UPDATE alerts SET state='sent' WHERE id=?", (al['id'],))
         # the room phone answers the outbound call: monitoring resumes with no prompts
         r = call({**room, 'PBXcallId': 'r2', 'PBXcallType': 'out'})
-        self.assertEqual(r[-1]['type'], 'noiseMonitor')
+        self.assertEqual([c['type'] for c in r], ['noiseMonitor'])  # silent: nothing is played in the room
         self.assertEqual(r[-1]['roomId'], f's{sid}-0521234567')
         s2 = self.con.execute("SELECT * FROM sessions WHERE call_id='r2'").fetchone()
         self.assertEqual((s2['alert_phone'], s2['subscriber_id']), ('0501112222', sid))

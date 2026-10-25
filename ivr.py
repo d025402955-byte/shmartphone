@@ -53,6 +53,8 @@ TEXTS = {
             'חשוב: השאירו את הטלפון שבחדר מחובר למטען, בקרבת מקום השינה, ואל תנתקו את השיחה. '
             'ספקים מסוימים מנתקים שיחות ארוכות אחרי כשעה. אם זה קורה, נתקשר אליכם להודיע שהקו התנתק. '
             'אחרי כל התראה אפשר להתקשר למערכת ולשמוע מה קרה, ואחרי ניתוק גם לחדש את הניטור בחיוג לטלפון שבחדר. '
+            'כדי שהחיוג החוזר יעבוד, יש להגדיר בטלפון שבחדר מענה אוטומטי לשיחות. '
+            'החיבור בחיוג החוזר שקט לגמרי, ולא יושמע בחדר שום צליל. '
             'השירות הוא עזר בלבד, ואינו מחליף השגחה של מבוגר. תודה שבחרתם בשְׁמַרְטַפוֹן.',
     'welcome_trial': 'ברוכים הבאים לשְׁמַרְטַפוֹן. הופעלה עבורכם תקופת ניסיון של {days} ימים.',
     'not_registered': 'מספר הטלפון שממנו התקשרתם אינו רשום בשירות שְׁמַרְטַפוֹן.',
@@ -585,7 +587,7 @@ class Call:
                     self.data['ab'] = None
         return self.act_conf(sub, t(self.cfg, 'more_added'))
 
-    def start_monitor(self, sub, alert_phone, extra=None, backup=None):
+    def start_monitor(self, sub, alert_phone, extra=None, backup=None, silent=False):
         room = f"s{sub['id']}-{self.phone}"[:40]
         self.data['ax'] = [x for x in (extra or []) if x != alert_phone][:3]
         self.data['ab'] = backup if backup != alert_phone else None
@@ -605,6 +607,8 @@ class Call:
             cmd['maxDuration'] = max(50, minutes * 60 - 10)
             intro.append(t(self.cfg, 'balance_left', amount=self.money(store.balance(sub) / 100),
                            time=self.say_minutes(minutes)))
+        if silent:  # call-back to the room phone: nothing may be heard there (the baby is asleep)
+            return [cmd]
         return [say(*intro, t(self.cfg, 'starting')), cmd]
 
     def per_minute(self):
@@ -948,7 +952,7 @@ class Call:
         self.con.execute("UPDATE alerts SET state='answered' WHERE id=?", (row['id'],))
         self.bind(sub)
         pd = json.loads(prev['data']) if prev['data'] else {}
-        return self.start_monitor(sub, prev['alert_phone'], pd.get('ax'), pd.get('ab'))
+        return self.start_monitor(sub, prev['alert_phone'], pd.get('ax'), pd.get('ab'), silent=True)
 
     # ----- noise history -----
     def allowed_subs(self):
