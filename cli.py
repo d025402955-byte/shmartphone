@@ -182,6 +182,33 @@ def messages():
     con.close()
 
 
+def simulate(phone, *keys):
+    """Replay a menu call for PHONE pressing KEYS (menu, then answers) on a COPY of the database; prints the JSON."""
+    import datetime
+    import shutil
+    import tempfile
+    import ivr
+    with open(CFG, encoding='utf-8') as f:
+        cfg = json.load(f)
+    tmp = os.path.join(tempfile.mkdtemp(), 'sim.db')
+    con0 = store.connect(cfg['db_path'])
+    con0.execute('PRAGMA wal_checkpoint')
+    con0.close()
+    shutil.copy(cfg['db_path'], tmp)
+    cfg['db_path'] = tmp
+    con = store.connect(tmp)
+    p = {'PBXphone': phone, 'PBXnum': cfg.get('pbx_number', ''), 'PBXcallId': 'sim1', 'PBXcallStatus': 'NEW'}
+    names = ['menu']
+    with con:
+        r, _ = ivr.handle(cfg, con, p, datetime.date.today(), 'menu')
+    for k in keys:
+        name = next((c.get('name') for c in reversed(r) if c.get('name')), 'menu')
+        p[name] = k
+        with con:
+            r, _ = ivr.handle(cfg, con, dict(p), datetime.date.today(), 'menu')
+    print(json.dumps(r, ensure_ascii=False)[:3000])
+
+
 def stats():
     con = store.connect(db_path())
     print('subscribers:', dict(con.execute('SELECT status, COUNT(*) FROM subscribers GROUP BY status').fetchall()))
@@ -197,6 +224,8 @@ if __name__ == '__main__':
         extensions()
     elif cmd == 'log':
         log_window(*sys.argv[2:5])
+    elif cmd == 'simulate':
+        simulate(*sys.argv[2:])
     elif cmd == 'messages':
         messages()
     elif cmd == 'credit':
