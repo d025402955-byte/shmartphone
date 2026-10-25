@@ -232,8 +232,8 @@ class IvrTests(Base):
         self.assertEqual(self.ask_name(r), 'acr')
         self.send(acr='1')
         self.assertEqual(store.verified_phones(self.con, sid), [])
-        r = self.send(acm='4')  # disabled -> cannot verify
-        self.assertEqual(self.ask_name(r), 'acm')
+        r = self.send(acm='4')  # no verification here any more (only during activation)
+        self.assertEqual(r[-1]['type'], 'hangup')
 
     def test_menu_info_and_message(self):
         r = self.call('0599999999', mode='menu')
