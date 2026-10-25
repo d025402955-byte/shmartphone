@@ -27,20 +27,18 @@ import time
 import niqqud
 import store
 
-MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history', 'pay', 'reconnect', 'alert', 'stop', 'voicemail')
-MENU_KEYS = {'1': 'activate', '2': 'listen', '3': 'info', '6': 'account',
-             '7': 'history', '8': 'stop', '9': 'message', '0': 'voicemail'}
+MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history', 'pay', 'reconnect', 'alert', 'stop', 'voicemail', 'parent')
+MENU_KEYS = {'1': 'activate', '2': 'parent', '3': 'info', '6': 'account', '9': 'message', '0': 'voicemail'}
+PARENT_KEYS = {'1': 'listen', '2': 'history', '3': 'stop'}
 HEB_MONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר',
               'נובמבר', 'דצמבר']
 VERIFY_TTL = 30 * 60
 
 TEXTS = {
     'menu': 'ברוכים הבאים לשְׁמַרְטַפוֹן, המערכת החכמה שתסייע בשמירה על ילדיכם ותעניק לכם שקט נפשי כאשר אתם יוצאים מהבית. '
-            'לשימוש בטלפון זה לחדר התינוק, הקישו 1. להאזנה לחדר התינוק, הקישו 2. '
+            'לשימוש בטלפון זה לחדר התינוק, הקישו 1. להאזנה לחדר התינוק, לרעשים ולהפסקת התראות, הקישו 2. '
             'להסבר ולהוראות הפעלה, הקישו 3. '
             'לניהול חשבון המנוי והטלפונים המורשים, הקישו 6. '
-            'לשמיעת הרעשים שזוהו לאחרונה, הקישו 7. '
-            'להפסקת קבלת ההתראות מחדר פעיל, הקישו 8. '
             'להשארת הודעה לשירות הלקוחות, הקישו 9.',
     'info': 'שְׁמַרְטַפוֹן הוא שירות שמאפשר לכם לצאת מהבית בשקט, כשהילדים ישנים. '
             'משאירים בחדר טלפון, מתקשרים ממנו למערכת, ומקישים 1 להפעלת השְׁמַרְטַפוֹן. '
@@ -89,7 +87,8 @@ TEXTS = {
     'notice_noise_many': 'מאז {first} זוהו {n} רעשים בחדר התינוק. האחרון בשעה {hh}.',
     'notice_disc': 'בשעה {hh} השיחה מהטלפון שבחדר התינוק נותקה.',
     'notice_balance': 'בשעה {hh} יתרת הפיקדון נגמרה, והניטור הסתיים.',
-    'notice_history': 'לשמיעת הרעשים הקישו 7 בתפריט.',
+    'notice_history': 'לשמיעת הרעשים הקישו בתפריט הראשי 2 ואחר כך 2.',
+    'parent_menu': 'להאזנה לחדר הקישו 1. לשמיעת הרעשים שזוהו לאחרונה הקישו 2. להפסקת קבלת ההתראות מחדר פעיל הקישו 3.',
     'al_keys_menu': 'לחיוג לטלפון שבחדר וחידוש הניטור, בעלות של כשקל מהפיקדון, הקישו 1. לתפריט הראשי הקישו 0.',
     'al_keys_menu_free': 'לחיוג לטלפון שבחדר וחידוש הניטור הקישו 1. לתפריט הראשי הקישו 0.',
     'al_keys_free': 'לחיוג לטלפון שבחדר וחידוש הניטור הקישו 1. לסיום הקישו 0.',
@@ -188,7 +187,7 @@ TEXTS = {
     'rc_room': 'לחיוג חוזר לטלפון',
     'rc_calling': 'מתקשרים עכשיו לטלפון שבחדר. כשהוא יענה, הניטור יתחדש. להתראות.',
     'rc_none': 'לא נמצא ניטור שהתנתק ב-12 השעות האחרונות.',
-    'rc_active': 'הניטור בחדר פעיל כרגע. להאזנה לחדר הקישו 2 בתפריט הראשי.',
+    'rc_active': 'הניטור בחדר פעיל כרגע. להאזנה לחדר הקישו בתפריט הראשי 2 ואחר כך 1.',
     'rc_too_many': 'כבר חייגנו כמה פעמים לטלפון שבחדר בשעתיים האחרונות. נסו שוב מאוחר יותר.',
     'history_none': 'לא נרשמו אירועי רעש ביממה האחרונה.',
     'history_intro': 'ביממה האחרונה נרשמו {n} אירועי רעש. מתחילים מהאחרון. '
@@ -324,7 +323,7 @@ class Call:
             'al_mode': ('alt', self.on_alert_mode), 'pay_dep': ('pdep', self.on_deposit_pick),
             'vm_pin': ('vpin', self.on_vm_pin), 'vm_nav': ('vnav', self.on_vm_nav),
             'act_conf': ('aconf', self.on_act_conf), 'act_more': ('amore', self.on_act_more),
-            'act_num': ('anum', self.on_act_num),
+            'act_num': ('anum', self.on_act_num), 'par_menu': ('pmenu', self.on_parent_menu),
         }
         if step in handlers and handlers[step][0] in p:
             return handlers[step][1](p[handlers[step][0]])
@@ -337,7 +336,7 @@ class Call:
                 'phones': self.phones, 'verify': self.verify, 'account': self.account,
                 'message': self.message, 'history': self.history,
                 'pay': self.pay_menu, 'reconnect': self.reconnect, 'stop': self.stop_alerts,
-                'voicemail': self.voicemail,
+                'voicemail': self.voicemail, 'parent': self.parent_menu,
                 'alert': self.disconnect_alert}.get(mode, self.activate)()
 
     def on_hangup(self):
@@ -361,6 +360,19 @@ class Call:
         files = [{'text': x} for x in ([prefix] if isinstance(prefix, str) else (prefix or [])) if x]
         return [{'type': 'simpleMenu', 'name': 'menu', 'enabledKeys': ','.join(MENU_KEYS), 'times': 3,
                  'timeout': 7, 'errorReturn': 'ERROR', 'files': files + [{'text': t(self.cfg, 'menu')}]}]
+
+    # ----- 2: listen / noise history / stop alerts -----
+    def parent_menu(self):
+        self.save('par_menu')
+        return [{'type': 'simpleMenu', 'name': 'pmenu', 'enabledKeys': ','.join(PARENT_KEYS), 'times': 2,
+                 'timeout': 7, 'errorReturn': 'ERROR', 'files': [{'text': t(self.cfg, 'parent_menu')}]}]
+
+    def on_parent_menu(self, key):
+        mode = PARENT_KEYS.get(key)
+        if not mode:
+            return hangup(self.cfg, t(self.cfg, 'goodbye'))
+        self.save(None, mode=mode)
+        return self.entry(mode)
 
     # ----- what happened since the last alert (the parent calls back after a ring-and-drop) -----
     def hhmm(self, ts):

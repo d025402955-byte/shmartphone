@@ -238,7 +238,7 @@ class IvrTests(Base):
     def test_menu_info_and_message(self):
         r = self.call('0599999999', mode='menu')
         self.assertEqual(r[0]['type'], 'simpleMenu')
-        self.assertIn('7', r[0]['enabledKeys'].split(','))
+        self.assertNotIn('7', r[0]['enabledKeys'].split(','))  # 7 and 8 moved under 2
         r = self.send(menu='3')
         self.assertEqual((r[0]['type'], r[-1]['type'], r[-1]['name']), ('simpleMessage', 'simpleMenu', 'menu'))
         r = self.send(menu='ERROR')  # no key after the menu repeated: the call really ends
@@ -860,7 +860,9 @@ class PingAndDepositTests(Base):
         self.start_room()
         self.ev('monitorStart')
         r = self.ivr('0501112222', 'p1', 'menu')
-        r = self.ivr('0501112222', 'p1', 'menu', menu='8')
+        r = self.ivr('0501112222', 'p1', 'menu', menu='2')
+        self.assertEqual(r[-1]['name'], 'pmenu')
+        r = self.ivr('0501112222', 'p1', 'menu', menu='2', pmenu='3')
         self.assertIn('הופסקה', r[0]['files'][0]['text'])
         self.assertEqual(self.ev('noise', eventId='e9'), (200, 'muted'))
 
