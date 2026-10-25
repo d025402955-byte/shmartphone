@@ -122,7 +122,7 @@ CREATE INDEX IF NOT EXISTS messages_state ON messages(state);
 MIGRATIONS = {
     'sessions': [('step', 'TEXT'), ('mode', 'TEXT'), ('data', 'TEXT'), ('mon_start', 'REAL'), ('charged', 'INTEGER')],
     'alerts': [('payload', 'TEXT'), ('not_before', 'REAL'), ('heard', 'REAL'), ('charged', 'INTEGER')],
-    'noise_events': [('file_name', 'TEXT'), ('folder', 'TEXT')],
+    'noise_events': [('file_name', 'TEXT'), ('folder', 'TEXT'), ('file_url', 'TEXT')],
     'subscribers': [('billing', 'TEXT'), ('keva_id', 'TEXT'), ('balance', 'INTEGER'), ('alert_mode', 'TEXT'),
                     ('alert_extra', 'TEXT'), ('alert_backup', 'TEXT')],
 }

@@ -43,8 +43,10 @@ def record_noise(con, sess, ev, now):
     if ev.get('event') == 'noiseEnd':
         file_id = None if ev.get('fileError') else (str(ev.get('fileId') or '')[:64] or None)
         if not ev.get('fileError') and ev.get('fileName'):  # playback needs the name and the folder it was saved in
-            con.execute('UPDATE noise_events SET file_name=?, folder=? WHERE event_id=?',
-                        (str(ev['fileName'])[:120], str(ev.get('saveFolder') or '')[:20] or None, eid))
+            url = str(ev.get('fileUrl') or '')
+            con.execute('UPDATE noise_events SET file_name=?, folder=?, file_url=? WHERE event_id=?',
+                        (str(ev['fileName'])[:120], str(ev.get('saveFolder') or '')[:20] or None,
+                         url[:500] if url.startswith('https://') else None, eid))
         con.execute('UPDATE noise_events SET ended=?, noise_sec=?, peak=COALESCE(?,peak), file_id=COALESCE(?,file_id), '
                     'started=COALESCE(?,started) WHERE event_id=?',
                     (now, _num(ev.get('noiseSec')), _num(ev.get('peakLevel'), int), file_id,

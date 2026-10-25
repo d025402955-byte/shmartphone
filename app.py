@@ -154,7 +154,9 @@ def make_handler(cfg):
                 finally:
                     con.close()
                 print('EVENT', ev.get('event'), ev.get('roomId'), msg,
-                      'level=' + str(ev.get('level') or ev.get('peakLevel') or ''), flush=True)
+                      'level=' + str(ev.get('level') or ev.get('peakLevel') or ''),
+                      ('file=' + str(ev.get('fileName')) + (' url' if ev.get('fileUrl') else ' no-url'))
+                      if ev.get('event') == 'noiseEnd' else '', flush=True)
                 if msg == 'queued':
                     wake.set()
                 return self.send(status, 'text/plain', msg.encode())

@@ -1099,3 +1099,27 @@ class EarlyHangupMessageTests(Base):
         with self.con:
             ivr.handle(self.cfg, self.con, {**p, 'menu': '9', 'PBXcallStatus': 'HANGUP'}, DAY, 'menu')
         self.assertEqual(self.con.execute('SELECT file_name FROM messages').fetchone()[0], 'msg_h1')
+
+
+class FreshNoiseTests(Base):
+    def test_fresh_recording_plays_by_direct_link(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567')
+            store.add_verified(self.con, sid, '0501112222', 'admin')
+        p = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'c1', 'PBXcallStatus': 'CALL'}
+        with self.con:
+            ivr.handle(self.cfg, self.con, p, DAY)
+        with self.con:
+            ivr.handle(self.cfg, self.con, {**p, 'anum': '0501112222'}, DAY)
+        with self.con:
+            ivr.handle(self.cfg, self.con, {**p, 'anum': '0501112222', 'aconf': '1'}, DAY)
+        base = {'time': time.time(), 'roomId': f's{sid}-0521234567', 'callId': 'c1', 'num': PBX, 'eventId': 'e1'}
+        with self.con:
+            core.handle_event(self.cfg, self.con, {**base, 'event': 'noise'}, 'noise')
+            core.handle_event(self.cfg, self.con, {**base, 'event': 'noiseEnd', 'noiseSec': 4, 'fileId': 'F9',
+                                                   'fileName': 'noise_x', 'saveFolder': '12116',
+                                                   'fileUrl': 'https://files.example/noise_x.opus'}, 'noiseEnd')
+        q = {'PBXphone': '0501112222', 'PBXnum': PBX, 'PBXcallId': 'h1', 'PBXcallStatus': 'CALL'}
+        with self.con:
+            r = ivr.handle(self.cfg, self.con, q, DAY, 'history')[0]
+        self.assertIn({'fileLink': 'https://files.example/noise_x.opus', 'fileName': 'noise_x'}, r[0]['files'])

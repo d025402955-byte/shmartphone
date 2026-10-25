@@ -991,7 +991,14 @@ class Call:
             if not self.allowed_subs():
                 return hangup(self.cfg, t(self.cfg, 'not_registered'))
             return hangup(self.cfg, t(self.cfg, 'history_none'))
-        return self.history_for([s['id'] for s in subs])  # all rooms together, newest first: no choosing
+        if len(subs) == 1:
+            return self.history_for(subs[0]['id'])
+        self.data['hsubs'] = [[s['id'], s['main_phone']] for s in subs[:8]]
+        self.save('his_sub')
+        files = []
+        for i, (_, main) in enumerate(self.data['hsubs'], 1):
+            files += [self.choice(i, 'history_pick'), {'digits': main}]
+        return [ask('hsub', files)]
 
     def on_history_sub(self, key):
         subs = self.data.get('hsubs', [])
@@ -1049,6 +1056,8 @@ class Call:
     def noise_file(self, event_row_id):
         """Name the extension the recording was saved in, or Technoline plays silence."""
         r = self.con.execute('SELECT * FROM noise_events WHERE id=?', (event_row_id,)).fetchone()
+        if r['file_url'] and r['file_name']:  # the direct link plays at once, before the file is filed in the folder
+            return {'fileLink': r['file_url'], 'fileName': r['file_name']}
         item = {'fileName': r['file_name']} if r['file_name'] else {'fileId': r['file_id']}
         folder = r['folder'] or self.cfg.get('messages_folder')
         if folder:
