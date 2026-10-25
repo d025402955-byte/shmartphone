@@ -155,7 +155,11 @@ TEXTS = {
     'listen_ended': 'הניטור בחדר הסתיים.',
     'listen_failed': 'לא הצלחנו לחבר אתכם לחדר. נסו שוב בעוד רגע.',
     'listen_full': 'כבר יש מאזין בחדר. נסו שוב בעוד כמה דקות.',
-    'phones_menu': 'להוספת טלפון מורשה הקישו 1. לשמיעת הטלפונים המורשים הקישו 2. להסרת טלפון מורשה הקישו 3. לסיום הקישו 0.',
+    'phones_menu': 'להוספת טלפון מורשה הקישו 1. לשמיעת והסרת הטלפונים המורשים הקישו 2. לסיום הקישו 0.',
+    'one_keys': 'להסרת המספר הקישו 1. למספר הבא הקישו 2. לחזרה הקישו 0.',
+    'verified_one': 'מספר מאומת {i} מתוך {n}:',
+    'phone_one': 'טלפון מורשה {i} מתוך {n}:',
+    'list_end': 'אין מספרים נוספים.',
     'phones_ask': 'הקישו את מספר הטלפון שתרצו להוסיף, ובסיומו הקישו סולמית.',
     'phones_added': 'הטלפון נוסף כטלפון מורשה.',
     'phones_main': 'הטלפון הראשי',
@@ -1210,24 +1214,11 @@ class Call:
             self.save('ph_add')
             return [ask('phn', [t(self.cfg, 'phones_ask')], mx=10, mn=9, timeout=6, confirm='digits', skip=True)]
         extras = self.con.execute('SELECT * FROM phones WHERE subscriber_id=? ORDER BY id', (sub['id'],)).fetchall()
-        if key == '2':
-            files = [t(self.cfg, 'phones_main'), {'digits': sub['main_phone']}]
-            if extras:
-                files.append(t(self.cfg, 'phones_extra'))
-                files += [{'digits': e['phone']} for e in extras]
-            else:
-                files.append(t(self.cfg, 'phones_none'))
-            return [say(*files)] + self.phones()
-        if key == '3':
+        if key in ('2', '3'):
             if not extras:
                 return self.phones(t(self.cfg, 'phones_none'))
-            self.data['extras'] = [[e['id'], e['phone']] for e in extras[:8]]
-            self.save('ph_rm')
-            files = []
-            for i, e in enumerate(extras[:8], 1):
-                files += [self.choice(i, 'phones_remove'), {'digits': e['phone']}]
-            files.append(t(self.cfg, 'back_zero'))
-            return [ask('phr', files)]
+            self.data['extras'] = [[e['id'], e['phone']] for e in extras[:20]]
+            return self.phone_one(0)
         if key == '0':
             return hangup(self.cfg, t(self.cfg, 'goodbye'))
         if self.retry():
@@ -1246,14 +1237,27 @@ class Call:
             return self.phones(str(e))
         return self.phones(t(self.cfg, 'phones_added'))
 
+    def phone_one(self, idx, prefix=None):
+        extras = self.data.get('extras', [])
+        if idx >= len(extras):
+            return self.phones(' '.join(x for x in (prefix, t(self.cfg, 'list_end')) if x))
+        self.data['lidx'] = idx
+        self.save('ph_rm')
+        return [ask('phr', [prefix, t(self.cfg, 'phone_one', i=idx + 1, n=len(extras)), {'digits': extras[idx][1]},
+                            t(self.cfg, 'one_keys')])]
+
     def on_phones_rm(self, key):
         sub, _, err = self.subscriber()
         if err:
             return err
         extras = self.data.get('extras', [])
-        if key.isdigit() and 1 <= int(key) <= len(extras):
-            store.remove_phone(self.con, sub['id'], extras[int(key) - 1][0])
-            return self.phones(t(self.cfg, 'phones_removed'))
+        idx = self.data.get('lidx', 0)
+        if key == '1' and idx < len(extras):
+            store.remove_phone(self.con, sub['id'], extras[idx][0])
+            self.data['extras'] = extras[:idx] + extras[idx + 1:]
+            return self.phone_one(idx, t(self.cfg, 'phones_removed'))
+        if key == '2':
+            return self.phone_one(idx + 1)
         return self.phones()
 
     # ----- 6: account -----
@@ -1393,13 +1397,8 @@ class Call:
             ver = store.verified_phones(self.con, sub['id'])
             if not ver:
                 return self.account(t(self.cfg, 'account_no_verified'))
-            self.data['verified'] = ver[:8]
-            self.save('acc_rm')
-            files = [t(self.cfg, 'account_verified')] + [{'digits': v} for v in ver[:8]]
-            for i, v in enumerate(ver[:8], 1):
-                files += [self.choice(i, 'account_remove'), {'digits': v}]
-            files.append(t(self.cfg, 'back_zero'))
-            return [ask('acr', files)]
+            self.data['verified'] = ver[:20]
+            return self.verified_one(0)
         if key == '3':
             ok, _ = store.authorization(sub, self.day, self.cfg.get('enforce_active_expiry', False))
             return self.phones() if ok else self.account(t(self.cfg, 'disabled'))
@@ -1440,16 +1439,30 @@ class Call:
         store.audit(self.con, 'alert_mode', {'id': sub['id'], 'mode': modes[key]})
         return self.account(t(self.cfg, 'alerts_saved'))
 
+    # one number at a time: the number, then remove / next / back
+    def verified_one(self, idx, prefix=None):
+        ver = self.data.get('verified', [])
+        if idx >= len(ver):
+            return self.account(' '.join(x for x in (prefix, t(self.cfg, 'list_end')) if x))
+        self.data['lidx'] = idx
+        self.save('acc_rm')
+        return [ask('acr', [prefix, t(self.cfg, 'verified_one', i=idx + 1, n=len(ver)), {'digits': ver[idx]},
+                            t(self.cfg, 'one_keys')])]
+
     def on_account_rm(self, key):
         sub, _, err = self.subscriber(allow_inactive=True)
         if err:
             return err
         ver = self.data.get('verified', [])
-        if key.isdigit() and 1 <= int(key) <= len(ver):
-            store.remove_verified(self.con, sub['id'], ver[int(key) - 1])
-            if sub['alert_phone'] == ver[int(key) - 1]:
+        idx = self.data.get('lidx', 0)
+        if key == '1' and idx < len(ver):
+            store.remove_verified(self.con, sub['id'], ver[idx])
+            if sub['alert_phone'] == ver[idx]:
                 store.update_subscriber(self.con, sub['id'], alert_phone=None)
-            return self.account(t(self.cfg, 'removed'))
+            self.data['verified'] = ver[:idx] + ver[idx + 1:]
+            return self.verified_one(idx, t(self.cfg, 'removed'))
+        if key == '2':
+            return self.verified_one(idx + 1)
         return self.account()
 
     # ----- 9: message -----

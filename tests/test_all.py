@@ -1123,3 +1123,25 @@ class FreshNoiseTests(Base):
         with self.con:
             r = ivr.handle(self.cfg, self.con, q, DAY, 'history')[0]
         self.assertIn({'fileLink': 'https://files.example/noise_x.opus', 'fileName': 'noise_x'}, r[0]['files'])
+
+
+class OneAtATimeTests(Base):
+    def test_phones_listed_one_by_one(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567')
+            store.add_phone(self.con, sid, '0531111111')
+            store.add_phone(self.con, sid, '0532222222')
+        p = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'o1', 'PBXcallStatus': 'CALL'}
+        call = lambda **a: ivr.handle(self.cfg, self.con, {**p, **a}, DAY, 'phones')[0]
+        with self.con:
+            call()
+        with self.con:
+            r = call(phm='2')
+        self.assertIn(sp('0531111111'), spoken(r[0]))
+        self.assertNotIn(sp('0532222222'), spoken(r[0]))  # only the first number
+        with self.con:
+            r = call(phm='2', phr='2')  # next
+        self.assertIn(sp('0532222222'), spoken(r[0]))
+        with self.con:
+            call(phm='2', phr='1')  # remove the current (second) one
+        self.assertEqual([x[0] for x in self.con.execute('SELECT phone FROM phones')], ['0531111111'])
