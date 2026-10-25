@@ -417,7 +417,7 @@ class Call:
         self.save('stop_pick')
         files = []
         for i, r in enumerate(rooms, 1):
-            files += [t(self.cfg, 'stop_pick'), {'digits': r['phone']}, t(self.cfg, f'press_{i}')]
+            files += [self.choice(i, 'stop_pick'), {'digits': r['phone']}]
         return [ask('stp', files)]
 
     def on_stop_pick(self, key):
@@ -485,7 +485,7 @@ class Call:
         else:
             files = [intro] + last
             for i, ph in enumerate(choices, 1):
-                files += [t(self.cfg, 'pick_prefix'), {'digits': ph}, t(self.cfg, f'press_{i}')]
+                files += [self.choice(i, 'pick_prefix'), {'digits': ph}]
             files.append(t(self.cfg, 'pick_new'))
         return ask('apick', files)
 
@@ -548,7 +548,7 @@ class Call:
         self.save('act_more')
         files = []
         for i, x in enumerate(cands, 1):
-            files += [t(self.cfg, 'more_pick'), {'digits': x}, t(self.cfg, f'press_{i}')]
+            files += [self.choice(i, 'more_pick'), {'digits': x}]
         files.append(t(self.cfg, 'more_new'))
         return [ask('amore', files)]
 
@@ -740,7 +740,7 @@ class Call:
         self.save('lis_pick')
         files = []
         for i, (main, _, _) in enumerate(rooms[:8], 1):
-            files += [t(self.cfg, 'listen_pick'), {'digits': main}, t(self.cfg, f'press_{i}')]
+            files += [self.choice(i, 'listen_pick'), {'digits': main}]
         return [ask('lpick', files)]
 
     def on_listen_pick(self, key):
@@ -811,7 +811,7 @@ class Call:
         else:
             files.append(t(self.cfg, 'rc_many'))
             for i, r in enumerate(rooms, 1):
-                files += [t(self.cfg, 'rc_room'), {'digits': r[2]}, t(self.cfg, f'press_{i}')]
+                files += [self.choice(i, 'rc_room'), {'digits': r[2]}]
         return [ask('rcon', files, timeout=8)]
 
     def reconnect(self):
@@ -850,6 +850,10 @@ class Call:
         self.data['al'] = [row['subscriber_id'], prev['call_id'], prev['phone']]
         self.bind_id(row['subscriber_id'])
         return self.alert_menu()
+
+    def choice(self, i, label_key):
+        """'Press N for <label>' then the phone number: a short text right after a number was skipped by the PBX."""
+        return f"{t(self.cfg, f'press_{i}').rstrip('.')} {t(self.cfg, label_key)}"
 
     def rc_key(self, name):
         """Prompt variant that mentions the reconnect cost only while reconnects are charged."""
@@ -958,7 +962,7 @@ class Call:
         self.save('his_sub')
         files = []
         for i, (_, main) in enumerate(self.data['hsubs'], 1):
-            files += [t(self.cfg, 'history_pick'), {'digits': main}, t(self.cfg, f'press_{i}')]
+            files += [self.choice(i, 'history_pick'), {'digits': main}]
         return [ask('hsub', files)]
 
     def on_history_sub(self, key):
@@ -1145,7 +1149,7 @@ class Call:
             self.save('ph_rm')
             files = []
             for i, e in enumerate(extras[:8], 1):
-                files += [t(self.cfg, 'phones_remove'), {'digits': e['phone']}, t(self.cfg, f'press_{i}')]
+                files += [self.choice(i, 'phones_remove'), {'digits': e['phone']}]
             files.append(t(self.cfg, 'back_zero'))
             return [ask('phr', files)]
         if key == '0':
@@ -1317,7 +1321,7 @@ class Call:
             self.save('acc_rm')
             files = [t(self.cfg, 'account_verified')] + [{'digits': v} for v in ver[:8]]
             for i, v in enumerate(ver[:8], 1):
-                files += [t(self.cfg, 'account_remove'), {'digits': v}, t(self.cfg, f'press_{i}')]
+                files += [self.choice(i, 'account_remove'), {'digits': v}]
             files.append(t(self.cfg, 'back_zero'))
             return [ask('acr', files)]
         if key == '3':
@@ -1487,5 +1491,4 @@ def handle(cfg, con, p, day, mode='activate', now=None):
     resp = c.run(mode if mode in MODES else 'activate')
     if mode == 'menu':
         resp = back_to_menu(c, resp)
-    resp = apply_voice(cfg, resp)
-    return (merge_files(resp) if not cfg.get('voice') else resp), c.wake
+    return apply_voice(cfg, resp), c.wake

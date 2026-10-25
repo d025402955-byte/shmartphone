@@ -19,7 +19,7 @@ DAY = datetime.date(2026, 10, 23)
 
 
 def spoken(cmd):
-    return ' '.join(f.get('text', '') for f in cmd.get('files', []))
+    return ' '.join(f.get('text') or ' '.join(f.get('digits', '')) for f in cmd.get('files', []))
 
 
 def sp(phone):
