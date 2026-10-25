@@ -997,6 +997,15 @@ class VoicemailTests(Base):
         self.assertIn({'fileName': 'f.wav'}, r[0]['files'])
         self.assertIn(sp('0521234567'), spoken(r[0]))
         with self.con:
+            r = call(menu='0', vpin='12345', vnav='8')  # call the sender back
+        self.assertEqual((r[-1]['type'], r[-1]['dialPhone']), ('simpleRouting', '0521234567'))
+        with self.con:
+            r = call(menu='0', vpin='12345', vnav='8', vroute='ANSWERED')  # back to the list, then the menu
+        with self.con:
+            call(menu='0')
+        with self.con:
+            call(menu='0', vpin='12345')
+        with self.con:
             r = call(menu='0', vpin='12345', vnav='7')
         self.assertEqual(self.con.execute('SELECT state FROM messages').fetchone()[0], 'deleted')
 

@@ -97,7 +97,10 @@ TEXTS = {
     'vm_bad_pin': 'הקוד שגוי.',
     'vm_none': 'אין הודעות.',
     'vm_intro': 'יש {n} הודעות, מתוכן {new} חדשות. מתחילים מהחדשה ביותר. '
-                'בכל רגע: לבאה הקישו 3, לקודמת 1, לשמיעה חוזרת 2, לפרטי ההודעה 5, למחיקה 7, לסיום 0.',
+                'בכל רגע: לבאה הקישו 3, לקודמת 1, לשמיעה חוזרת 2, לפרטי ההודעה 5, למחיקה 7, '
+                'לחיוג למשאיר ההודעה 8, לסיום 0.',
+    'vm_dialing': 'מחייגים למשאיר ההודעה.',
+    'vm_no_phone': 'אין מספר טלפון להודעה הזו.',
     'vm_item': 'הודעה {i}, מהטלפון',
     'vm_when': 'ב-{date} בשעה {hh}, {sec} שניות.',
     'vm_unknown': 'ממספר חסוי,',
@@ -320,6 +323,7 @@ class Call:
             'rc_done': ('rcd', self.on_reconnect_done), 'stop_pick': ('stp', self.on_stop_pick),
             'al_mode': ('alt', self.on_alert_mode), 'pay_dep': ('pdep', self.on_deposit_pick),
             'vm_pin': ('vpin', self.on_vm_pin), 'vm_nav': ('vnav', self.on_vm_nav),
+            'vm_route': ('vroute', lambda _r: self.vm_play(self.data.get('vidx', 0) + 1)),
             'act_conf': ('aconf', self.on_act_conf), 'act_more': ('amore', self.on_act_more),
             'act_num': ('anum', self.on_act_num), 'par_menu': ('pmenu', self.on_parent_menu),
         }
@@ -1091,7 +1095,7 @@ class Call:
 
     def vm_menu(self, files):
         self.save('vm_nav')
-        return [{'type': 'simpleMenu', 'name': 'vnav', 'enabledKeys': '0,1,2,3,5,7', 'times': 1,
+        return [{'type': 'simpleMenu', 'name': 'vnav', 'enabledKeys': '0,1,2,3,5,7,8', 'times': 1,
                  'timeout': int(self.cfg.get('history_gap', 2)), 'errorReturn': 'NEXT',
                  'files': [f for f in files if f]}]
 
@@ -1136,6 +1140,16 @@ class Call:
                 d = datetime.datetime.fromtimestamp(row['created'], tz)
                 return self.vm_menu([{'text': t(self.cfg, 'vm_when', date=say_date(d.date().isoformat()),
                                                 hh=d.strftime('%H:%M'), sec=int(row['duration'] or 0))}])
+        if key == '8':  # call the person who left the message and connect the owner to them
+            row = self.vm_row(idx)
+            if row and store.valid_phone(store.norm_phone(row['phone'] or '')):
+                store.audit(self.con, 'voicemail_callback', {'id': row['id']})
+                self.save('vm_route')
+                return [say(t(self.cfg, 'vm_dialing')),
+                        {'type': 'simpleRouting', 'name': 'vroute', 'dialPhone': store.norm_phone(row['phone']),
+                         'displayNumber': str(self.cfg.get('pbx_number') or ''), 'routingMusic': 'no',
+                         'ringSec': 40, 'limit': ''}]
+            return self.vm_menu([{'text': t(self.cfg, 'vm_no_phone')}])
         if key == '7':
             row = self.vm_row(idx)
             if row:
