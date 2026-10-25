@@ -316,7 +316,7 @@ def set_voicemail_pin():
     print('voicemail code saved')
 
 
-SETTABLE = {'messages_folder'}
+SETTABLE = {'messages_folder', 'niqqud'}
 
 
 def set_value():
@@ -328,7 +328,9 @@ def set_value():
     val = sys.argv[3].strip()
     with open(NEW_CFG, encoding='utf-8') as f:
         cfg = json.load(f)
-    if val == '0':
+    if key == 'niqqud':
+        cfg[key] = val not in ('0', 'off', 'no')
+    elif val == '0':
         cfg.pop(key, None)
     else:
         cfg[key] = val
