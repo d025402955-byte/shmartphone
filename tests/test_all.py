@@ -795,7 +795,7 @@ class PingAndDepositTests(Base):
 
     def test_start_says_alert_phone(self):
         r = self.start_room()
-        self.assertIn(sp('0501112222'), spoken(r[0]))
+        self.assertNotIn(sp('0501112222'), spoken(r[0]))  # the number is not read out
         self.assertNotIn('maxDuration', r[-1])
 
     def test_ping_payload_and_fallback(self):

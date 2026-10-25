@@ -605,7 +605,7 @@ class Call:
             cmd['maxDuration'] = max(50, minutes * 60 - 10)
             intro.append(t(self.cfg, 'balance_left', amount=self.money(store.balance(sub) / 100),
                            time=self.say_minutes(minutes)))
-        return [say(*intro, t(self.cfg, 'starting_to'), {'digits': alert_phone}, t(self.cfg, 'starting_place')), cmd]
+        return [say(*intro, t(self.cfg, 'starting')), cmd]
 
     def per_minute(self):
         return max(1, int((self.cfg.get('payments') or {}).get('per_minute_agorot', 1)))
