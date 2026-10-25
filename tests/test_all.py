@@ -478,7 +478,7 @@ class HistoryTests(Base):
         r = go()
         self.assertEqual(r[0]['type'], 'simpleMenu')
         texts = ' '.join(f.get('text', '') for f in r[0]['files'])
-        self.assertIn('נרשמו 2 אירועי רעש', texts)
+        self.assertIn('נרשמו 2 רעשים', texts)
         self.assertIn('אין הקלטה', texts)  # newest (ev2) has no recording
         self.assertNotIn('בשעה', texts)  # details only on request
         r = go(hnav='NEXT')  # no key -> next (older) = ev1

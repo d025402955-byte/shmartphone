@@ -191,8 +191,8 @@ TEXTS = {
     'rc_active': 'הניטור בחדר פעיל כרגע. להאזנה לחדר הקישו בתפריט הראשי 2 ואחר כך 1.',
     'rc_too_many': 'כבר חייגנו כמה פעמים לטלפון שבחדר בשעתיים האחרונות. נסו שוב מאוחר יותר.',
     'history_none': 'לא נרשמו אירועי רעש ביממה האחרונה.',
-    'history_intro': 'ביממה האחרונה נרשמו {n} אירועי רעש. מתחילים מהאחרון. '
-                     'בכל רגע: לבא הקישו 3, לקודם 1, לשמיעה חוזרת 2, לזמן ופרטי ההקלטה 5, לסיום 0.',
+    'history_intro': 'נרשמו {n} רעשים ביממה האחרונה. מתחילים מהאחרון.',
+    'history_help': 'לבא הקישו 3, לקודם 1, לשמיעה חוזרת 2, לזמן ופרטים 5, לסיום 0.',
     'history_item': 'אירוע {i}, בשעה {hh}, לפני {ago}, {sec} שניות.',
     'history_peak': 'עוצמה מרבית {peak} מתוך 100.',
     'history_no_file': 'לאירוע הזה אין הקלטה.',
@@ -991,14 +991,7 @@ class Call:
             if not self.allowed_subs():
                 return hangup(self.cfg, t(self.cfg, 'not_registered'))
             return hangup(self.cfg, t(self.cfg, 'history_none'))
-        if len(subs) == 1:
-            return self.history_for(subs[0]['id'])
-        self.data['hsubs'] = [[s['id'], s['main_phone']] for s in subs[:8]]
-        self.save('his_sub')
-        files = []
-        for i, (_, main) in enumerate(self.data['hsubs'], 1):
-            files += [self.choice(i, 'history_pick'), {'digits': main}]
-        return [ask('hsub', files)]
+        return self.history_for([s['id'] for s in subs])  # all rooms together, newest first: no choosing
 
     def on_history_sub(self, key):
         subs = self.data.get('hsubs', [])
@@ -1006,10 +999,14 @@ class Call:
             return self.history_for(subs[int(key) - 1][0])
         return hangup(self.cfg, t(self.cfg, 'goodbye'))
 
-    def history_for(self, sid):
-        rows = self.con.execute('SELECT * FROM noise_events WHERE subscriber_id=? AND started>? '
-                                'ORDER BY started DESC LIMIT 30', (sid, self.now - 86400)).fetchall()
-        self.data['hsid'] = sid
+    def history_for(self, sids):
+        sids = sids if isinstance(sids, list) else [sids]
+        rows = self.con.execute(f"SELECT * FROM noise_events WHERE subscriber_id IN ({','.join('?' * len(sids))}) "
+                                "AND started>? AND (ended IS NOT NULL OR started<?) ORDER BY started DESC LIMIT 30",
+                                (*sids, self.now - 86400, self.now - 300)).fetchall()
+        if not rows:
+            return hangup(self.cfg, t(self.cfg, 'history_none'))
+        self.data['hsid'] = sids[0]
         self.data['hev'] = [[r['started'], r['file_id'], int(round(r['noise_sec'] or 0)), r['peak'], r['id']]
                             for r in rows]
         self.data['hidx'] = 0
@@ -1042,8 +1039,12 @@ class Call:
         idx = max(0, idx)
         self.data['hidx'] = idx
         fid = events[idx][1]
+        first_help = {'text': t(self.cfg, 'history_help')} if idx == 0 and not self.data.get('hhelp') else None
+        self.data['hhelp'] = True
+        # the recording comes right after the short count; the key help follows it once
         return self.history_menu([{'text': prefix} if prefix else None,
-                                  self.noise_file(events[idx][4]) if fid else {'text': t(self.cfg, 'history_no_file')}])
+                                  self.noise_file(events[idx][4]) if fid else {'text': t(self.cfg, 'history_no_file')},
+                                  first_help])
 
     def noise_file(self, event_row_id):
         """Name the extension the recording was saved in, or Technoline plays silence."""
