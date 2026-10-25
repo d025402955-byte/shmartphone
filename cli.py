@@ -209,6 +209,14 @@ def simulate(phone, *keys):
     print(json.dumps(r, ensure_ascii=False)[:3000])
 
 
+def hostkey():
+    """Print the server's SSH host key fingerprints (to compare with what ssh shows on first connect)."""
+    import glob
+    import subprocess
+    for f in sorted(glob.glob('/etc/ssh/ssh_host_*_key.pub')):
+        print(subprocess.run(['ssh-keygen', '-lf', f], capture_output=True, text=True).stdout.strip())
+
+
 def stats():
     con = store.connect(db_path())
     print('subscribers:', dict(con.execute('SELECT status, COUNT(*) FROM subscribers GROUP BY status').fetchall()))
@@ -224,6 +232,8 @@ if __name__ == '__main__':
         extensions()
     elif cmd == 'log':
         log_window(*sys.argv[2:5])
+    elif cmd == 'hostkey':
+        hostkey()
     elif cmd == 'simulate':
         simulate(*sys.argv[2:])
     elif cmd == 'messages':
