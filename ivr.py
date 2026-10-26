@@ -1564,11 +1564,16 @@ class Call:
             dur = float(p.get('DURATION_rec') or 0)
         except ValueError:
             dur = 0
-        self.con.execute('INSERT INTO messages(subscriber_id,phone,call_id,file_id,file_name,duration,created,state) '
-                         'VALUES(?,?,?,?,?,?,?,?)',
-                         (self.sess['subscriber_id'] if self.sess else None, self.phone, self.call_id,
-                          p.get('FILEID_rec'), p.get('FILE_rec') or p.get('rec') or self.data.get('rec_name'), dur, self.now,
-                          'pending' if self.cfg.get('smtp') else 'stored'))
+        cur = self.con.execute('INSERT INTO messages(subscriber_id,phone,call_id,file_id,file_name,duration,created,state) '
+                               'VALUES(?,?,?,?,?,?,?,?)',
+                               (self.sess['subscriber_id'] if self.sess else None, self.phone, self.call_id,
+                                p.get('FILEID_rec'), p.get('FILE_rec') or p.get('rec') or self.data.get('rec_name'), dur,
+                                self.now, 'pending' if self.cfg.get('smtp') else 'stored'))
+        notify = store.norm_phone(self.cfg.get('message_notify_phone'))
+        if store.valid_phone(notify):  # ring-and-drop to the owner (caller ID ...4444 = new message)
+            self.con.execute('INSERT OR IGNORE INTO alerts(unique_key,call_id,kind,alert_phone,created,state) '
+                             'VALUES(?,?,?,?,?,?)',
+                             (f'message:{cur.lastrowid}', self.call_id, 'message', notify, self.now, 'pending'))
         self.data['saved'] = True
         self.wake = True
 

@@ -255,6 +255,24 @@ class IvrTests(Base):
         self.call('0599999999', mode='message')
         self.send(PBXcallStatus='HANGUP', FILEID_rec='888', DURATION_rec='5')
         self.assertEqual(self.con.execute('SELECT file_id FROM messages').fetchone()[0], '888')
+        self.assertIsNone(self.con.execute("SELECT 1 FROM alerts WHERE kind='message'").fetchone())  # not configured
+
+    def test_new_message_pings_the_owner(self):
+        self.cfg.update({'message_notify_phone': '0533155059', 'alert_mode': 'voice'})
+        self.call('0599999999', mode='message', call='m3')
+        self.send()
+        self.send(rec='file1', FILEID_rec='779', FILE_rec='file1', DURATION_rec='9')
+        a = self.con.execute("SELECT * FROM alerts WHERE kind='message'").fetchone()
+        self.assertEqual((a['alert_phone'], a['state']), ('0533155059', 'pending'))
+        sent = []
+        orig = core.send_ping
+        core.send_ping = lambda cfg, kind, phone: (sent.append((cfg['alert_mode'], kind, phone)) or ('sent', {}))
+        try:
+            self.assertTrue(core.process_one(self.cfg, self.db, log=lambda *a, **k: None))
+        finally:
+            core.send_ping = orig
+        self.assertEqual(sent, [('ping', 'message', '0533155059')])  # a ring-and-drop even when alerts are 'voice'
+        self.assertEqual(self.con.execute("SELECT state FROM alerts WHERE kind='message'").fetchone()[0], 'sent')
 
 
 class EventTests(Base):

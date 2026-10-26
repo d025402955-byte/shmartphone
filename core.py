@@ -173,7 +173,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-PING_CODES = {'noise': '1111', 'disconnected': '2222', 'balance': '3333'}
+PING_CODES = {'noise': '1111', 'disconnected': '2222', 'balance': '3333', 'message': '4444'}
 VOICE_TEXTS = {'noise': 'שְׁמַרְטַפוֹן. זוהה רעש בחדר התינוק. בשעה {code}.',
                'disconnected': 'שְׁמַרְטַפוֹן. הקו בחדר התינוק התנתק. בשעה {code}.',
                'balance': 'שְׁמַרְטַפוֹן. יתרת הפיקדון נגמרה והניטור הסתיים. בשעה {code}.'}
@@ -211,6 +211,8 @@ def send_ping(cfg, kind, phone):
 def send_alert(cfg, kind, phone, override_text=None, mode=None):
     """Deliver one alert. mode: ping / voice (free makeCall) or message (paid campaign call).
     Returns (state, result_dict). Raises on transport errors."""
+    if kind == 'message':  # new voicemail (key 9): always a free ring-and-drop to the owner, never a paid call
+        return ('demo', {}) if cfg.get('demo') else send_ping({**cfg, 'alert_mode': 'ping'}, kind, phone)
     mode = mode or cfg.get('alert_mode') or 'message'
     if kind in PING_CODES and mode in ('ping', 'voice') and not cfg.get('demo'):
         state, result = send_ping({**cfg, 'alert_mode': mode}, kind, phone)
