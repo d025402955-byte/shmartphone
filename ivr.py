@@ -81,7 +81,7 @@ TEXTS = {
     'pick_last': 'להתחברות עם פרטי ההתחברות האחרונה, הקישו 0.',
     'num_last': 'להתחברות עם פרטי ההתחברות האחרונה, הקישו 1 וסולמית. למספר אחר, הקישו את המספר ובסיומו סולמית.',
     'num_only': 'הקישו את מספר הטלפון שיקבל את ההתראות, ובסיומו סולמית.',
-    'num_self': 'לקבלת ההתראות בטלפון שממנו התקשרתם, הקישו 4 וסולמית.',
+    'num_self': 'לקבלת ההתראות בטלפון שממנו התקשרתם, הקישו 2 וסולמית.',
     'more_ask': 'הקישו את המספר, ובסיומו סולמית. לחזרה הקישו סולמית.',
     'conf_to': 'ההתראות יישלחו למספר',
     'conf_and': 'וגם למספר',
@@ -517,7 +517,7 @@ class Call:
         """'1#' = last details; otherwise type the alert number and '#'. No numbers are read out."""
         self.save('act_num')
         key = 'num_last' if self.last_alert_phone() else 'num_only'
-        own = t(self.cfg, 'num_self') if self.data.get('rm') else None  # 2 -> 4: '4#' = the phone calling now
+        own = t(self.cfg, 'num_self') if self.data.get('rm') else None  # 2 -> 4: '2#' = the phone calling now
         return [ask('anum', [prefix, own, t(self.cfg, key)], mx=10, mn=1, timeout=10)]
 
     def on_act_num(self, value):
@@ -529,7 +529,7 @@ class Call:
             extra = [x for x in (sub['alert_extra'] or '').split(',') if x in verified]
             backup = sub['alert_backup'] if sub['alert_backup'] in verified else None
             return self.begin(sub, self.last_alert_phone(), extra, backup)
-        if value == '4' and self.data.get('rm'):
+        if value == '2' and self.data.get('rm'):
             value = self.phone  # verified on the spot: the call comes from it
         n = store.norm_phone(value)
         if not store.valid_phone(n) or n == self.data.get('rm'):

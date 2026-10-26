@@ -749,7 +749,7 @@ class AlertReconnectTests(Base):
         self.assertIn('מרחוק', self.call(parent, 'parent')[0]['files'][0]['text'])
         self.assertEqual(self.call({**parent, 'pmenu': '4'}, 'parent')[-1]['name'], 'rnum')
         self.assertEqual(self.call({**parent, 'rnum': '0501112222'})[-1]['name'], 'rnum')  # own phone: not the room
-        r = self.call({**parent, 'rnum': '0521234567'})  # then exactly as in 1, plus '4#' = this phone
+        r = self.call({**parent, 'rnum': '0521234567'})  # then exactly as in 1, plus '2#' = this phone
         self.assertEqual(r[-1]['name'], 'anum')
         self.assertIn('שממנו התקשרתם', spoken(r[-1]))
         self.assertEqual(self.call({**parent, 'anum': '0521234567'})[-1]['name'], 'anum')  # room phone can't get alerts
@@ -782,7 +782,7 @@ class AlertReconnectTests(Base):
         parent = {'PBXphone': '0501112222', 'PBXnum': PBX, 'PBXcallId': 'P2', 'PBXcallStatus': 'CALL'}
         self.call(parent, 'remote')
         self.call({**parent, 'rnum': '0531234567'})
-        self.call({**parent, 'anum': '4'})  # '4#' = alerts to the phone calling now
+        self.call({**parent, 'anum': '2'})  # '2#' = alerts to the phone calling now
         self.call({**parent, 'aconf': '1'})
         payload = self.con.execute("SELECT payload FROM alerts WHERE kind='reconnect'").fetchone()[0]
         self.assertEqual(json.loads(payload)['settings']['ap'], '0501112222')
