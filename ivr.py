@@ -153,6 +153,14 @@ TEXTS = {
     'bad_number': 'המספר שהוקש אינו תקין.',
     'verified_ok': 'המספר אומת ויקבל התראות.',
     'code_sent': 'התקשרנו עכשיו למספר שהקשתם, והשמענו בו קוד אימות בן ארבע ספרות. הקישו כאן את הקוד.',
+    'code_sent_confirm': 'אנחנו מתקשרים עכשיו למספר שהקשתם. ענו לשיחה שם, והקישו 1 לאישור. אנחנו ממתינים כאן על הקו.',
+    'ver_wait': 'ממתינים לאישור. אם שמעתם קוד, הקישו 9 כדי להקליד אותו.',
+    'ver_type_code': 'הקישו את הקוד.',
+    'vc_ask': 'שלום, כאן שְׁמַרְטַפוֹן. ביקשו לשלוח לטלפון הזה התראות מחדר התינוק. לאישור הקישו 1. '
+              'אם לא ביקשתם, אפשר פשוט לנתק.',
+    'vc_code': 'קוד האימות הוא: {code}.',
+    'vc_done': 'תודה. הטלפון אושר לקבלת התראות. להתראות.',
+    'vc_gone': 'הבקשה כבר אינה בתוקף. להתראות.',
     'ask_pending_code': 'יש לכם אימות שממתין לקוד. הקישו את הקוד שקיבלתם, או סולמית לאימות מספר אחר.',
     'code_wrong': 'הקוד שגוי.',
     'code_later': 'האימות לא הושלם. אפשר לנסות שוב בהפעלה הבאה.',
@@ -267,6 +275,11 @@ def spaced(code):
     return ', '.join(code)
 
 
+def confirm_by_key(cfg):
+    """Verification calls go into the alert extension, where pressing 1 confirms (no code to carry over)."""
+    return bool(cfg.get('alert_extension')) and cfg.get('verify_by_key', True)
+
+
 class Call:
     def __init__(self, cfg, con, p, day, now):
         self.cfg, self.con, self.p, self.day, self.now = cfg, con, p, day, now
@@ -350,7 +363,8 @@ class Call:
             'vm_route': ('vroute', lambda _r: self.vm_play(self.data.get('vidx', 0) + 1)),
             'act_conf': ('aconf', self.on_act_conf), 'act_more': ('amore', self.on_act_more),
             'act_num': ('anum', self.on_act_num), 'par_menu': ('pmenu', self.on_parent_menu),
-            'rm_num': ('rnum', self.on_remote_num),
+            'rm_num': ('rnum', self.on_remote_num), 'ver_wait': ('vw', self.on_ver_wait),
+            'vc_menu': ('vcm', self.on_vc_menu),
         }
         if step in handlers and handlers[step][0] in p:
             return handlers[step][1](p[handlers[step][0]])
@@ -746,8 +760,63 @@ class Call:
         self.data['vid'] = cur.lastrowid
         self.wake = True
         self.reset_tries()
+        if confirm_by_key(self.cfg):  # the other phone just presses 1; typing the code stays possible (9)
+            self.data['v_since'] = self.now
+            return self.ver_wait(t(self.cfg, 'code_sent_confirm'))
         self.save('ver_code')
-        return [ask('vcode', [t(self.cfg, 'code_sent')], mx=4, mn=4, timeout=25, skip=True)]
+        return [ask('vcode', [t(self.cfg, 'code_sent')], mx=4, mn=4, timeout=40, skip=True)]
+
+    def ver_wait(self, text=None):
+        self.save('ver_wait')
+        return [{'type': 'simpleMenu', 'name': 'vw', 'enabledKeys': '9', 'times': 1,
+                 'timeout': int(self.cfg.get('verify_poll_seconds', 7)), 'errorReturn': 'WAIT',
+                 'files': [{'text': text or t(self.cfg, 'ver_wait')}]}]
+
+    def on_ver_wait(self, key):
+        sub, _, err = self.subscriber()
+        if err:
+            return err
+        v = self.con.execute('SELECT * FROM verifications WHERE id=? AND subscriber_id=?',
+                             (self.data.get('vid'), sub['id'])).fetchone()
+        if v and v['done']:  # confirmed on the other phone
+            return self.verified_continue(sub, v['phone'])
+        if key == '9':
+            self.save('ver_code')
+            return [ask('vcode', [t(self.cfg, 'ver_type_code')], mx=4, mn=4, timeout=15, skip=True)]
+        failed = self.con.execute("SELECT 1 FROM alerts WHERE unique_key=? AND state='failed'",
+                                  (f"verify:{self.data.get('vid')}",)).fetchone()
+        if not v or failed:
+            return hangup(self.cfg, t(self.cfg, 'code_failed'))
+        if self.now - self.data.get('v_since', self.now) > float(self.cfg.get('verify_wait_seconds', 90)):
+            return hangup(self.cfg, t(self.cfg, 'code_later'))
+        return self.ver_wait()
+
+    # ----- the verification call, answered on the other phone (outbound into the alert extension) -----
+    def pending_confirm(self):
+        last = self.con.execute("SELECT unique_key FROM alerts WHERE alert_phone=? AND kind IN ('verify','disconnected') "
+                                "AND created>? ORDER BY id DESC LIMIT 1", (self.phone, self.now - 600)).fetchone()
+        if not last or not last['unique_key'].startswith('verify:'):
+            return None
+        v = self.con.execute('SELECT * FROM verifications WHERE id=?', (int(last['unique_key'].split(':')[1]),)).fetchone()
+        return v if v and not v['done'] else None
+
+    def confirm_menu(self, v):
+        self.data['vc'] = v['id']
+        self.save('vc_menu')
+        return [{'type': 'simpleMenu', 'name': 'vcm', 'enabledKeys': '1', 'times': 3, 'timeout': 6,
+                 'errorReturn': 'ERROR', 'files': [{'text': t(self.cfg, 'vc_ask')},
+                                                   {'text': t(self.cfg, 'vc_code', code=spaced(v['code']))}]}]
+
+    def on_vc_menu(self, key):
+        v = self.con.execute('SELECT * FROM verifications WHERE id=?', (self.data.get('vc'),)).fetchone()
+        self.save(None)
+        if key != '1' or not v:
+            return hangup(self.cfg, t(self.cfg, 'goodbye'))
+        if v['done'] or v['created'] < self.now - VERIFY_TTL:
+            return hangup(self.cfg, t(self.cfg, 'vc_gone'))
+        self.con.execute('UPDATE verifications SET done=? WHERE id=?', (self.now, v['id']))
+        store.add_verified(self.con, v['subscriber_id'], v['phone'], 'answer')
+        return hangup(self.cfg, t(self.cfg, 'vc_done'))
 
     def on_ver_code(self, value):
         sub, _, err = self.subscriber()
@@ -962,7 +1031,10 @@ class Call:
 
     # ----- the 'room disconnected' alert call (outbound to the parent) -----
     def disconnect_alert(self):
-        row = self.con.execute("SELECT * FROM alerts WHERE kind='disconnected' AND alert_phone=? "
+        v = self.pending_confirm()  # the same extension also answers verification calls
+        if v:
+            return self.confirm_menu(v)
+        row =self.con.execute("SELECT * FROM alerts WHERE kind='disconnected' AND alert_phone=? "
                                "AND state IN ('sent','sending','unknown','demo') AND created>? ORDER BY id DESC LIMIT 1",
                                (self.phone, self.now - 1800)).fetchone()
         prev = row and self.con.execute('SELECT * FROM sessions WHERE call_id=?', (row['call_id'],)).fetchone()

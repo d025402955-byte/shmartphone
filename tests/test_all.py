@@ -832,6 +832,80 @@ class AlertReconnectTests(Base):
         self.assertIn('לא הצלחנו', r[0]['files'][0]['text'])
 
 
+class VerifyConfirmTests(Base):
+    """The verification call goes into the alert extension: the other phone presses 1, no code to carry over."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg.update({'alert_extension': '4322'})
+        with self.con:
+            self.sid = store.create_subscriber(self.con, main_phone='0521234567')
+        self.room = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'r1', 'PBXcallStatus': 'CALL'}
+        self.other = {'PBXphone': '0501112222', 'PBXnum': PBX, 'PBXcallId': 'V1', 'PBXcallStatus': 'CALL',
+                      'PBXcallType': 'out'}
+
+    def call(self, p, mode='activate', now=None):
+        with self.con:
+            return ivr.handle(self.cfg, self.con, p, DAY, mode, now=now)[0]
+
+    def ask_number(self):
+        self.call(self.room)
+        r = self.call({**self.room, 'anum': '0501112222'})
+        self.assertEqual(r[-1]['name'], 'vw')
+        self.assertIn('הקישו 1 לאישור', spoken(r[-1]))
+        return r
+
+    def test_confirm_with_1_on_the_other_phone(self):
+        self.ask_number()
+        self.assertEqual(self.call({**self.room, 'vw': 'WAIT'})[-1]['name'], 'vw')  # still waiting
+        r = self.call(self.other, 'alert')  # the other phone answers the verification call
+        self.assertEqual(r[-1]['name'], 'vcm')
+        code = self.con.execute('SELECT code FROM verifications').fetchone()[0]
+        self.assertIn(', '.join(code), spoken(r[-1]))  # the code is read out too, as a fallback
+        r = self.call({**self.other, 'vcm': '1'}, 'alert')
+        self.assertIn('אושר', spoken(r[0]))
+        self.assertIn('0501112222', store.verified_phones(self.con, self.sid))
+        r = self.call({**self.room, 'vw': 'WAIT'})
+        self.assertEqual(r[-1]['name'], 'aconf')  # back in activation: 1 = start monitoring
+
+    def test_typing_the_code_still_works(self):
+        self.ask_number()
+        r = self.call({**self.room, 'vw': '9'})
+        self.assertEqual(r[-1]['name'], 'vcode')
+        code = self.con.execute('SELECT code FROM verifications').fetchone()[0]
+        self.assertEqual(self.call({**self.room, 'vw': '9', 'vcode': code})[-1]['name'], 'aconf')
+
+    def test_gives_up_after_the_wait(self):
+        self.ask_number()
+        r = self.call({**self.room, 'vw': 'WAIT'}, now=time.time() + 120)
+        self.assertEqual(r[-1]['type'], 'hangup')
+        self.assertIn('לא הושלם', spoken(r[0]))
+
+    def test_disconnect_alert_still_works_on_the_same_extension(self):
+        self.ask_number()
+        with self.con:  # a newer 'room disconnected' alert to that phone wins over the verification
+            self.con.execute("INSERT INTO alerts(unique_key,subscriber_id,call_id,kind,alert_phone,created,state) "
+                             "VALUES('d1',?,'r0','disconnected','0501112222',?,'sent')", (self.sid, time.time() + 1))
+        self.assertNotEqual(self.call(self.other, 'alert')[-1].get('name'), 'vcm')
+
+    def test_verify_call_goes_to_the_alert_extension(self):
+        import urllib.request
+        sent = {}
+
+        class R:
+            def read(self, n): return b'{"status":"OK","errorCode":0}'
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        orig = urllib.request.OpenerDirector.open
+        urllib.request.OpenerDirector.open = lambda s, req, timeout=None: (sent.update(json.loads(req.data)), R())[1]
+        try:
+            core.send_alert(self.cfg, 'verify', '0501112222', 'קוד')
+        finally:
+            urllib.request.OpenerDirector.open = orig
+        self.assertEqual((sent['messagesType'], sent['extensionActivation']), ('extensionActivation', '4322'))
+        self.assertNotIn('audioText', sent)
+
+
 class EmailTests(Base):
     def test_message_email_worker(self):
         self.cfg['smtp'] = {'host': 'h', 'user': 'u', 'password': 'p', 'to': 't@x'}
