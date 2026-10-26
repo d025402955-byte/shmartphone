@@ -749,7 +749,9 @@ class AlertReconnectTests(Base):
         self.assertIn('מרחוק', self.call(parent, 'parent')[0]['files'][0]['text'])
         self.assertEqual(self.call({**parent, 'pmenu': '4'}, 'parent')[-1]['name'], 'rnum')
         self.assertEqual(self.call({**parent, 'rnum': '0501112222'})[-1]['name'], 'rnum')  # own phone: not the room
-        self.assertEqual(self.call({**parent, 'rnum': '0521234567'})[-1]['name'], 'anum')  # then exactly as in 1
+        r = self.call({**parent, 'rnum': '0521234567'})  # then exactly as in 1, plus '4#' = this phone
+        self.assertEqual(r[-1]['name'], 'anum')
+        self.assertIn('שממנו התקשרתם', spoken(r[-1]))
         self.assertEqual(self.call({**parent, 'anum': '0521234567'})[-1]['name'], 'anum')  # room phone can't get alerts
         self.assertEqual(self.call({**parent, 'anum': '0509998888'})[-1]['name'], 'aconf')
         r = self.call({**parent, 'aconf': '1'})
@@ -764,7 +766,7 @@ class AlertReconnectTests(Base):
                 'PBXcallType': 'out'}
         r = self.call(room)  # the room phone auto-answers: silent monitoring with the parent's choices
         self.assertEqual([c['type'] for c in r], ['noiseMonitor'])
-        self.assertEqual(r[0]['roomId'], f's{sid}-0521234567')
+        self.assertEqual((r[0]['roomId'], r[0]['joinBeep']), (f's{sid}-0521234567', 'no'))
         self.assertEqual(self.con.execute("SELECT alert_phone FROM sessions WHERE call_id='R1'").fetchone()[0],
                          '0509998888')
         r = self.call({**parent, 'rcw': 'WAIT'})
@@ -780,8 +782,10 @@ class AlertReconnectTests(Base):
         parent = {'PBXphone': '0501112222', 'PBXnum': PBX, 'PBXcallId': 'P2', 'PBXcallStatus': 'CALL'}
         self.call(parent, 'remote')
         self.call({**parent, 'rnum': '0531234567'})
-        self.call({**parent, 'anum': '0501112222'})  # the parent's own phone: verified by calling from it
+        self.call({**parent, 'anum': '4'})  # '4#' = alerts to the phone calling now
         self.call({**parent, 'aconf': '1'})
+        payload = self.con.execute("SELECT payload FROM alerts WHERE kind='reconnect'").fetchone()[0]
+        self.assertEqual(json.loads(payload)['settings']['ap'], '0501112222')
         r = self.call({**parent, 'rcw': 'WAIT'}, now=time.time() + 200)  # the room phone never answered
         self.assertIn('מענה אוטומטי', r[0]['files'][0]['text'])
         with self.con:  # a room phone that is already monitoring is not dialled again
