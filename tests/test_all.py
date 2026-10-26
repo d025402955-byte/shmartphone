@@ -774,6 +774,16 @@ class AlertReconnectTests(Base):
         r = self.call({**parent, 'rcd': '2'})
         self.assertEqual(r[-1], {'type': 'noiseMonitorJoin', 'name': 'join', 'roomId': f's{sid}-0521234567'})
 
+    def test_parent_menu_offers_joining_when_payments_on(self):
+        new = {'PBXphone': '0541234567', 'PBXnum': PBX, 'PBXcallId': 'J1', 'PBXcallStatus': 'CALL'}
+        r = self.call(new, 'parent')
+        self.assertNotIn('5', r[0]['enabledKeys'].split(','))  # no payments configured: no 'join' option
+        self.cfg['payments'] = {'monthly': 8.9, 'annual': 82}
+        r = self.call({**new, 'PBXcallId': 'J2'}, 'parent')
+        self.assertIn('5', r[0]['enabledKeys'].split(','))
+        self.assertIn('להצטרפות כמנוי', spoken(r[0]))
+        self.assertEqual(self.call({**new, 'PBXcallId': 'J2', 'pmenu': '5'}, 'parent')[-1]['name'], 'pplan')
+
     def test_remote_room_phone_busy_and_failed(self):
         self.cfg.update({'reconnect_extension': '4321', 'reconnect_charge': False})
         sid = self.setup_dropped()

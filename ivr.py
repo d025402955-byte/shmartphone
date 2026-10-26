@@ -31,7 +31,7 @@ import store
 
 MODES = ('menu', 'activate', 'listen', 'info', 'phones', 'verify', 'account', 'message', 'history', 'pay', 'reconnect', 'alert', 'stop', 'voicemail', 'parent', 'remote')
 MENU_KEYS = {'1': 'activate', '2': 'parent', '3': 'info', '4': 'account', '9': 'message', '0': 'voicemail'}
-PARENT_KEYS = {'1': 'listen', '2': 'history', '3': 'stop', '4': 'remote'}
+PARENT_KEYS = {'1': 'listen', '2': 'history', '3': 'stop', '4': 'remote', '5': 'pay'}
 HEB_MONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר',
               'נובמבר', 'דצמבר']
 VERIFY_TTL = 30 * 60
@@ -39,7 +39,7 @@ VERIFY_TTL = 30 * 60
 TEXTS = {
     'menu': 'ברוכים הבאים לשְׁמַרְטַפוֹן, המערכת החכמה שתסייע בשמירה על ילדיכם ותעניק לכם שקט נפשי כאשר אתם יוצאים מהבית. '
             'לשימוש בטלפון זה לחדר התינוק, הקישו 1. לשליטה מרחוק, האזנה לחדר, רעשים והפסקת התראות, הקישו 2. '
-            'להסברים, הקישו 3. לניהול המנוי, הקישו 4. לשליחת הודעה, הקישו 9.',
+            'להסברים, הקישו 3. להצטרפות כמנוי ולניהול המנוי, הקישו 4. לשליחת הודעה, הקישו 9.',
     'info': 'שְׁמַרְטַפוֹן הוא שירות שמאפשר לכם לצאת מהבית בשקט, כשהילדים ישנים. '
             'משאירים בחדר טלפון, מתקשרים ממנו למערכת, ומקישים 1 להפעלת השְׁמַרְטַפוֹן. '
             'אפשר גם להפעיל את הניטור מרחוק: מתקשרים מהטלפון שלכם, מקישים 2 ואחר כך 4, '
@@ -102,6 +102,7 @@ TEXTS = {
     'notice_history': 'לשמיעת הרעשים הקישו בתפריט הראשי 2 ואחר כך 2.',
     'parent_menu': 'להאזנה לחדר הקישו 1. לשמיעת הרעשים שזוהו לאחרונה הקישו 2. להפסקת קבלת ההתראות מחדר פעיל הקישו 3. '
                    'לחיבור הטלפון שבחדר התינוק מרחוק הקישו 4.',
+    'parent_join': 'להצטרפות כמנוי הקישו 5.',
     'rm_ask': 'הקישו את מספר הטלפון שבחדר התינוק, ובסיומו סולמית. בטלפון שבחדר צריך להגדיר מענה אוטומטי לשיחות.',
     'rm_busy': 'הטלפון שבחדר כבר מחובר לניטור.',
     'rm_ok': 'הטלפון שבחדר ענה, והניטור הופעל בהצלחה. להאזנה לחדר הקישו 2. לסיום הקישו 0.',
@@ -391,11 +392,15 @@ class Call:
     # ----- 2: listen / noise history / stop alerts -----
     def parent_menu(self):
         self.save('par_menu')
-        return [{'type': 'simpleMenu', 'name': 'pmenu', 'enabledKeys': ','.join(PARENT_KEYS), 'times': 2,
-                 'timeout': 7, 'errorReturn': 'ERROR', 'files': [{'text': t(self.cfg, 'parent_menu')}]}]
+        keys = [k for k in PARENT_KEYS if k != '5' or self.payments_on()]  # 5 = join (paid plans)
+        texts = [t(self.cfg, 'parent_menu')] + ([t(self.cfg, 'parent_join')] if '5' in keys else [])
+        return [{'type': 'simpleMenu', 'name': 'pmenu', 'enabledKeys': ','.join(keys), 'times': 2,
+                 'timeout': 7, 'errorReturn': 'ERROR', 'files': [{'text': x} for x in texts]}]
 
     def on_parent_menu(self, key):
         mode = PARENT_KEYS.get(key)
+        if mode == 'pay' and not self.payments_on():
+            mode = None
         if not mode:
             return hangup(self.cfg, t(self.cfg, 'goodbye'))
         self.save(None, mode=mode)
