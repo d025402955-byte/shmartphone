@@ -184,14 +184,14 @@ def send_ping(cfg, kind, phone):
     free message. The parent calls the line back to hear details. Needs the server IP approved at Technoline."""
     mode = cfg.get('alert_mode', 'ping')
     code = str((cfg.get('ping_codes') or {}).get(kind) or PING_CODES.get(kind, '9999'))
-    params = {'action': 'makeCall', 'phone': phone, 'cid': code}
+    params = {'action': 'makeCall', 'phone': phone, 'cid': code, 'apiKey': cfg['api_key']}  # 401 without it
     if cfg.get('ping_caller_id'):
         params['callerId'] = str(cfg['ping_caller_id'])
     if mode == 'voice':  # the required 4-digit code is read out: make it the time (HHMM)
         import datetime
         import zoneinfo
         params['cid'] = datetime.datetime.now(zoneinfo.ZoneInfo(cfg.get('timezone', 'Asia/Jerusalem'))).strftime('%H%M')
-        params.update({'mode': 'voice', 'apiKey': cfg['api_key'],
+        params.update({'mode': 'voice',
                        'voiceText': ((cfg.get('voice_texts') or {}).get(kind) or
                                      (niqqud.VOICE.get(kind) if cfg.get('niqqud', True) else None) or
                                      VOICE_TEXTS.get(kind, ''))[:200]})

@@ -133,11 +133,14 @@ def make_handler(cfg):
                 if wake_now:
                     wake.set()
                 results = {k: params[k] for k in ('join', 'DURATION_join', 'nm', 'DURATION_nm', 'rcw', 'rcd', 'alm', 'menu',
-                                                  'payment', 'hnav', 'vnav', 'rec', 'FILEID_rec', 'DURATION_rec')
+                                                  'pmenu', 'aconf', 'vw', 'vcm', 'payment', 'CONFIRM_payment', 'hnav',
+                                                  'vnav', 'rec', 'FILEID_rec', 'DURATION_rec')
                            if k in params}
                 if 'vpin' in params:
                     results['vpin'] = '***'
-                print('IVR', mode, params.get('PBXcallStatus'), params.get('PBXcallType', ''),
+                ph = str(params.get('PBXphone', ''))  # masked caller + short call id: tells parallel calls apart
+                who = (ph[:3] + '***' + ph[-3:] if len(ph) > 6 else ph or '-') + '#' + str(params.get('PBXcallId', ''))[-4:]
+                print('IVR', who, mode, params.get('PBXcallStatus'), params.get('PBXcallType', ''),
                       'types=' + ','.join(c.get('type', '') for c in resp), json.dumps(results), flush=True)
                 return self.json(200, resp)
 

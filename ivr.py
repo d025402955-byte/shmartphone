@@ -39,7 +39,7 @@ VERIFY_TTL = 30 * 60
 TEXTS = {
     'menu': 'ברוכים הבאים לשְׁמַרְטַפוֹן, המערכת החכמה שתסייע בשמירה על ילדיכם ותעניק לכם שקט נפשי כאשר אתם יוצאים מהבית. '
             'לשימוש בטלפון זה לחדר התינוק, הקישו 1. לשליטה מרחוק, האזנה לחדר, רעשים והפסקת התראות, הקישו 2. '
-            'להסברים, הקישו 3. להצטרפות כמנוי ולניהול המנוי, הקישו 4. לשליחת הודעה, הקישו 9.',
+            'להסברים, הקישו 3. לניהול המנוי ולהצטרפות מנויים חדשים, הקישו 4. לשליחת הודעה, הקישו 9.',
     'info': 'שְׁמַרְטַפוֹן הוא שירות שמאפשר לכם לצאת מהבית בשקט, כשהילדים ישנים. '
             'משאירים בחדר טלפון, מתקשרים ממנו למערכת, ומקישים 1 להפעלת השְׁמַרְטַפוֹן. '
             'אפשר גם להפעיל את הניטור מרחוק: מתקשרים מהטלפון שלכם, מקישים 2 ואחר כך 4, '
@@ -203,6 +203,7 @@ TEXTS = {
     'account_pay': 'להצטרפות או לחידוש מנוי בתשלום הקישו 5.',
     'pay_menu': 'למנוי חודשי ב-{monthly} שקלים לחודש, בהוראת קבע באשראי, הקישו 1. '
                 'למנוי שנתי ב-{annual} שקלים, בתשלום אחד, הקישו 2.',
+    'pay_active': 'המנוי שלכם כבר פעיל{until}, ואין צורך להצטרף שוב. אם בכל זאת תרצו לשלם:',
     'pay_card_intro': 'נעבור עכשיו להקשת פרטי כרטיס האשראי.',
     'pay_failed': 'התשלום לא הושלם. אפשר לנסות שוב בכל עת.',
     'pay_ok_monthly': 'תודה. המנוי החודשי הופעל, והוא בתוקף עד {date}. החיוב יתחדש מדי חודש.',
@@ -1442,6 +1443,12 @@ class Call:
         monthly, annual = self.prices()
         self.reset_tries()
         self.save('pay_plan')
+        if prefix is None and sub['status'] == 'active' and sub['plan'] in ('monthly', 'annual', 'free') and \
+                store.authorization(sub, self.day, self.cfg.get('enforce_active_expiry', False))[0]:
+            # e.g. a subscriber imported from the old system who thinks they must join again
+            exp = sub['expires']
+            until = f', בתוקף עד {say_date(exp)}' if exp and exp >= self.day.isoformat() else ''
+            prefix = t(self.cfg, 'pay_active', until=until)
         return [ask('pplan', [prefix, t(self.cfg, 'pay_menu', monthly=self.money(monthly),
                                          annual=self.money(annual)),
                               t(self.cfg, 'pay_deposit', price=self.price_words()) if self.deposits() else None,

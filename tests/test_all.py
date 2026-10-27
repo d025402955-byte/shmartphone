@@ -272,6 +272,21 @@ class IvrTests(Base):
         finally:
             core.send_ping = orig
         self.assertEqual(sent, [('ping', 'message', '0533155059')])  # a ring-and-drop even when alerts are 'voice'
+        import urllib.request
+        body = {}
+
+        class R:
+            def read(self, n): return b'{"status":"OK","errorCode":0}'
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        orig = urllib.request.OpenerDirector.open
+        urllib.request.OpenerDirector.open = lambda s, req, timeout=None: (
+            body.update(urllib.parse.parse_qsl(req.data.decode())), R())[1]
+        try:
+            core.send_ping({**self.cfg, 'alert_mode': 'ping'}, 'message', '0533155059')
+        finally:
+            urllib.request.OpenerDirector.open = orig
+        self.assertEqual((body['cid'], body['apiKey']), ('4444', 'k'))  # the API key is required (HTTP 401 without)
         self.assertEqual(self.con.execute("SELECT state FROM alerts WHERE kind='message'").fetchone()[0], 'sent')
 
 
@@ -801,6 +816,17 @@ class AlertReconnectTests(Base):
         self.assertIn('5', r[0]['enabledKeys'].split(','))
         self.assertIn('להצטרפות כמנוי', spoken(r[0]))
         self.assertEqual(self.call({**new, 'PBXcallId': 'J2', 'pmenu': '5'}, 'parent')[-1]['name'], 'pplan')
+
+    def test_pay_menu_tells_active_subscribers_they_need_not_join(self):
+        self.cfg['payments'] = {'monthly': 8.9, 'annual': 82}
+        with self.con:
+            store.create_subscriber(self.con, main_phone='0551234567', plan='monthly', status='active',
+                                    expires='2026-11-10')
+        caller = {'PBXphone': '0551234567', 'PBXnum': PBX, 'PBXcallId': 'K1', 'PBXcallStatus': 'CALL'}
+        r = self.call(caller, 'pay')
+        self.assertIn('כבר פעיל, בתוקף עד 10 בנובמבר 2026', spoken(r[-1]))
+        new = {'PBXphone': '0541234568', 'PBXnum': PBX, 'PBXcallId': 'K2', 'PBXcallStatus': 'CALL'}
+        self.assertNotIn('כבר פעיל', spoken(self.call(new, 'pay')[-1]))  # a new trial is not 'already a subscriber'
 
     def test_remote_room_phone_busy_and_failed(self):
         self.cfg.update({'reconnect_extension': '4321', 'reconnect_charge': False})
