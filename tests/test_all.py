@@ -631,6 +631,26 @@ class PaymentTests(Base):
         with self.con:
             self.assertEqual(nedarim.apply_transactions(self.cfg, self.con, rows, log=lambda *a, **k: None), (9, 0))
 
+    def test_phone_payment_without_confirm_is_not_extended_twice_by_sync(self):
+        today = datetime.date.today()
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0556788891', plan='monthly', status='active',
+                                          expires=(today + datetime.timedelta(days=14)).isoformat())
+            first = store.record_payment(self.con, sid, source='phone', months=1, amount=8.9, confirm=None, day=today)
+        tx = [{'TransactionId': '81639082', 'Amount': '8.9', 'Confirmation': '2743258', 'KevaId': '2577272',
+               'Groupe': f'שמרטפון {sid}', 'TransactionTime': today.strftime('%d/%m/%Y 20:16')}]
+        with self.con:  # the same charge, seen by the Nedarim sync: linked, not a second month
+            self.assertEqual(nedarim.apply_transactions(self.cfg, self.con, tx, log=lambda *a, **k: None),
+                             (81639082, 0))
+        sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sid,)).fetchone()
+        self.assertEqual((sub['expires'], sub['keva_id']), (first.isoformat(), '2577272'))
+        rows = self.con.execute('SELECT confirm, transaction_id FROM payments').fetchall()
+        self.assertEqual([tuple(r) for r in rows], [('2743258', '81639082')])
+        nxt = [{**tx[0], 'TransactionId': '81700000', 'Confirmation': '2799999',
+                'TransactionTime': (today + datetime.timedelta(days=31)).strftime('%d/%m/%Y 06:00')}]
+        with self.con:  # next month's standing-order charge does extend
+            self.assertEqual(nedarim.apply_transactions(self.cfg, self.con, nxt, log=lambda *a, **k: None)[1], 1)
+
     def test_sync_pages_and_state(self):
         self.cfg['nedarim'] = {'mosad': '1', 'api_password': 'x', 'start_id': '50'}
         calls = []

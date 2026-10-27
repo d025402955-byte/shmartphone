@@ -293,6 +293,20 @@ def record_payment(con, sid, *, source, months, amount, confirm=None, transactio
             if keva_id:
                 con.execute('UPDATE subscribers SET keva_id=? WHERE id=?', (keva_id, sid))
             return None
+    if source == 'nedarim':
+        # The phone result sometimes comes without CONFIRM_payment (seen with standing orders): the Nedarim
+        # charge is then matched to that phone payment by subscriber, amount and date, never extended twice.
+        day_ts = time.mktime(day.timetuple())
+        row = con.execute("SELECT * FROM payments WHERE subscriber_id=? AND source='phone' AND transaction_id IS NULL "
+                          "AND COALESCE(confirm,'')='' AND ABS(amount-?)<0.01 AND created BETWEEN ? AND ? "
+                          "ORDER BY id LIMIT 1", (sid, amount, day_ts - 2 * 86400, day_ts + 3 * 86400)).fetchone()
+        if row:
+            con.execute('UPDATE payments SET confirm=?, transaction_id=?, keva_id=COALESCE(keva_id,?) WHERE id=?',
+                        (confirm, transaction_id, keva_id, row['id']))
+            if keva_id:
+                con.execute('UPDATE subscribers SET keva_id=? WHERE id=?', (keva_id, sid))
+            audit(con, 'payment_linked', {'id': sid, 'payment': row['id'], 'transaction': transaction_id})
+            return None
     new = extend(con, sid, months, day)
     plan = 'annual' if months >= 12 else 'monthly'
     con.execute('UPDATE subscribers SET billing=?, amount=?, keva_id=COALESCE(?,keva_id) WHERE id=?',
