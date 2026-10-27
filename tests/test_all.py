@@ -837,6 +837,19 @@ class AlertReconnectTests(Base):
         self.assertIn('להצטרפות כמנוי', spoken(r[0]))
         self.assertEqual(self.call({**new, 'PBXcallId': 'J2', 'pmenu': '5'}, 'parent')[-1]['name'], 'pplan')
 
+    def test_renewed_trial_starts_on_the_next_call(self):
+        with self.con:  # an old trial, renewed: no end date until the subscriber calls again
+            sid = store.create_subscriber(self.con, main_phone='0551234560', plan='trial', status='trial')
+            self.con.execute('UPDATE subscribers SET expires=NULL WHERE id=?', (sid,))
+        caller = {'PBXphone': '0551234560', 'PBXnum': PBX, 'PBXcallId': 'T1', 'PBXcallStatus': 'CALL'}
+        r = self.call(caller)
+        self.assertIn('תקופת ניסיון של 7 ימים', spoken(r[-1]))
+        self.assertEqual(r[-1]['name'], 'anum')
+        exp = self.con.execute('SELECT expires FROM subscribers WHERE id=?', (sid,)).fetchone()[0]
+        self.assertEqual(exp, (DAY + datetime.timedelta(days=7)).isoformat())
+        r = self.call({**caller, 'PBXcallId': 'T2'})  # the next call does not restart it
+        self.assertNotIn('תקופת ניסיון', spoken(r[-1]))
+
     def test_pay_menu_tells_active_subscribers_they_need_not_join(self):
         self.cfg['payments'] = {'monthly': 8.9, 'annual': 82}
         with self.con:

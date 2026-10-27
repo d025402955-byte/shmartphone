@@ -324,6 +324,13 @@ class Call:
                                           expires=exp, notes='נרשם אוטומטית בשיחה ראשונה')
             sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sid,)).fetchone()
             intro = t(self.cfg, 'welcome_trial', days=days)
+        elif sub['status'] == 'trial' and not sub['expires']:  # a renewed trial: its days start with this call
+            days = int(self.cfg.get('auto_trial_days', 0) or 7)
+            store.update_subscriber(self.con, sub['id'],
+                                    expires=(self.day + datetime.timedelta(days=days)).isoformat())
+            store.audit(self.con, 'trial_start', {'id': sub['id'], 'days': days})
+            sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
+            intro = t(self.cfg, 'welcome_trial', days=days)
         if not allow_inactive:
             ok, reason = store.authorization(sub, self.day, self.cfg.get('enforce_active_expiry', False))
             if not ok:
