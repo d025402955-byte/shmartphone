@@ -383,12 +383,40 @@ class ImportTests(Base):
         self.assertNotIn('SECRETTOKEN', dump)
         with self.con:
             st = importer.import_subscribers(self.con, importer.read_table(self.SUBS_CSV.encode('utf-8-sig')))
-        self.assertEqual((st['created'], st['updated']), (0, 4))
+        self.assertEqual((st['created'], st['updated'], st['unchanged']), (0, 0, 4))  # nothing changed in the file
         with self.con:
             st = importer.import_phones(self.con, importer.read_table(self.PHONES_CSV.encode()))
         self.assertEqual(st['created'], 1)
         self.assertEqual(len(st['errors']), 1)
         self.assertEqual(store.find_by_phone(self.con, '0556713102')['main_phone'], '0533187195')
+
+    def test_reimport_keeps_payers_here_and_never_blocks_trials(self):
+        with self.con:
+            importer.import_subscribers(self.con, importer.read_table(self.SUBS_CSV.encode('utf-8-sig')))
+        trial = store.find_by_phone(self.con, '0533157319')
+        self.assertEqual((trial['status'], trial['expires']), ('trial', None))  # starts on the next call
+        paid = store.find_by_phone(self.con, '0533187195')
+        with self.con:
+            store.record_payment(self.con, paid['id'], source='phone', months=1, amount=8.9, day=DAY)
+            other = store.create_subscriber(self.con, main_phone='0521110000', plan='trial', status='trial',
+                                            legacy_id='11')
+            self.con.execute("UPDATE subscribers SET expires='2025-01-01' WHERE id=?", (other,))  # expired here
+        expires_paid = store.find_by_phone(self.con, '0533187195')['expires']
+        newer = ('ID,טלפון לקוח ראשי,סטטוס מנוי,סכום לחיוב,סוג חיוב,תאריך תפוגת המנוי\n'
+                 '7,0533157319,מושבת,8.9,חודשי,2024-03-01\n'      # open trial here: stays a trial
+                 '8,0533187195,מושבת,8.9,חודשי,2026-11-20\n'      # pays through this system: kept
+                 '9,0556758504,פעיל,8.9,חודשי,2026-12-01\n'       # renewed in the old system: updated
+                 '11,0521110000,תקופת נסיון,,חינמי,2025-01-01\n'  # expired trial here, trial in the file: renewed
+                 '12,0521110001,תקופת נסיון,,חינמי,2024-01-01\n')  # new trial
+        with self.con:
+            st = importer.import_subscribers(self.con, importer.read_table(newer.encode('utf-8-sig')), today=DAY)
+        self.assertEqual((st['kept_trial'], st['kept_paid'], st['created']), (1, 1, 1))
+        get = lambda p: store.find_by_phone(self.con, p)
+        self.assertEqual((get('0533157319')['status'], get('0533157319')['expires']), ('trial', None))
+        self.assertEqual((get('0533187195')['status'], get('0533187195')['expires']), ('active', expires_paid))
+        self.assertEqual((get('0556758504')['status'], get('0556758504')['expires']), ('active', '2026-12-01'))
+        self.assertEqual((get('0521110000')['status'], get('0521110000')['expires']), ('trial', None))
+        self.assertEqual((get('0521110001')['status'], get('0521110001')['expires']), ('trial', None))
 
     def test_html_table(self):
         html = ('<table><tr><th>ID</th><th>טלפון לקוח ראשי</th><th>סטטוס מנוי</th></tr>'

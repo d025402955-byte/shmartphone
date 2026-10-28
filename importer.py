@@ -147,8 +147,25 @@ def _pick(row, names):
 
 # ---------- importers ----------
 
-def import_subscribers(con, rows):
-    stats = {'created': 0, 'updated': 0, 'skipped': 0, 'errors': []}
+def _paid_here(con, sub):
+    """Billed by this system (Nedarim through our phone payments): the old system no longer decides."""
+    return sub['billing'] == 'nedarim' or con.execute('SELECT 1 FROM payments WHERE subscriber_id=? LIMIT 1',
+                                                      (sub['id'],)).fetchone() is not None
+
+
+def _trial_open(sub, today):
+    return sub['status'] == 'trial' and (not sub['expires'] or sub['expires'] >= today)
+
+
+def import_subscribers(con, rows, today=None):
+    """Create / refresh subscribers from a Rishumon export. Re-import safe:
+    - subscribers paying through this system keep plan, status and dates;
+    - trials are never blocked: a trial from the file starts its days on the next call (no end date),
+      and an open trial here stays open unless the file says the subscriber is now active;
+    - local data (verified numbers, alert numbers, history) is never touched."""
+    import datetime
+    today = (today or datetime.date.today()).isoformat()
+    stats = {'created': 0, 'updated': 0, 'kept_paid': 0, 'kept_trial': 0, 'skipped': 0, 'errors': []}
     for i, row in enumerate(rows, start=2):
         phone = store.norm_phone(_pick(row, SUB_COLUMNS['phone']))
         if not store.valid_phone(phone):
@@ -179,12 +196,24 @@ def import_subscribers(con, rows):
             existing = con.execute('SELECT * FROM subscribers WHERE legacy_id=?', (legacy,)).fetchone()
         if existing is None:
             existing = con.execute('SELECT * FROM subscribers WHERE main_phone=?', (phone,)).fetchone()
+        if status == 'trial':
+            fields.update(expires=None, next_charge=None)  # the trial days start on the next call
         try:
+            if existing and _paid_here(con, existing):
+                fields = {'name': fields['name']} if fields['name'] else {}
+                stats['kept_paid'] += 1
+            elif existing and _trial_open(existing, today) and status != 'active':
+                fields = {'name': fields['name']} if fields['name'] else {}
+                stats['kept_trial'] += 1
             if existing:
-                store.update_subscriber(con, existing['id'], main_phone=phone, **fields)
+                changed = {k: v for k, v in {'main_phone': phone, **fields}.items() if existing[k] != v}
+                if changed:
+                    store.update_subscriber(con, existing['id'], **changed)
+                    stats['updated'] += 1
+                else:
+                    stats['unchanged'] = stats.get('unchanged', 0) + 1
                 if legacy and not existing['legacy_id']:
                     con.execute('UPDATE subscribers SET legacy_id=? WHERE id=?', (legacy, existing['id']))
-                stats['updated'] += 1
             else:
                 store.create_subscriber(con, main_phone=phone, legacy_id=legacy,
                                         notes=('יובא מרישומון. ' + notes).strip(), **fields)
