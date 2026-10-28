@@ -847,7 +847,7 @@ class AlertReconnectTests(Base):
                 'PBXcallType': 'out'}
         r = self.call(room)  # the room phone auto-answers: silent monitoring with the parent's choices
         self.assertEqual([c['type'] for c in r], ['noiseMonitor'])
-        self.assertEqual((r[0]['roomId'], r[0]['joinBeep']), (f's{sid}-0521234567', 'no'))
+        self.assertEqual((r[0]['roomId'], r[0]['joinBeep']), (f's{sid}-0521234567', 'no'))  # silent: no prompt in the room
         self.assertEqual(self.con.execute("SELECT alert_phone FROM sessions WHERE call_id='R1'").fetchone()[0],
                          '0509998888')
         r = self.call({**parent, 'rcw': 'WAIT'})
@@ -954,6 +954,9 @@ class VerifyConfirmTests(Base):
         self.assertIn('0501112222', store.verified_phones(self.con, self.sid))
         r = self.call({**self.room, 'vw': 'WAIT'})
         self.assertEqual(r[-1]['name'], 'aconf')  # back in activation: 1 = start monitoring
+        r = self.call({**self.room, 'vw': 'WAIT', 'aconf': '1'})
+        self.assertEqual(r[-1]['type'], 'noiseMonitor')
+        self.assertIn('אל תנתקו את השיחה', spoken(r[0]))
 
     def test_typing_the_code_still_works(self):
         self.ask_number()
