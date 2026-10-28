@@ -3,6 +3,7 @@
 
   python3 /opt/shmartphone-app/cli.py import DIR    import DIR/subs.csv then DIR/phones.csv, then delete them
   python3 /opt/shmartphone-app/cli.py stats         subscriber counts
+  python3 /opt/shmartphone-app/cli.py report [send] print the daily summary (send: also email it now)
 """
 import json
 import os
@@ -247,6 +248,21 @@ def stats():
     con.close()
 
 
+def daily_report(send=False):
+    """Print the daily summary; with `send`, also email it now."""
+    import core
+    import report
+    with open(CFG, encoding='utf-8') as f:
+        cfg = json.load(f)
+    con = store.connect(cfg['db_path'])
+    subject, body = report.build(con)
+    con.close()
+    print(subject + '\n\n' + body)
+    if send:
+        core.send_text_email(cfg, subject, body)
+        print('sent to', cfg['smtp'].get('report_to') or cfg['smtp']['to'])
+
+
 if __name__ == '__main__':
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'stats'
     if cmd == 'import':
@@ -269,6 +285,8 @@ if __name__ == '__main__':
         test_alert(*sys.argv[2:5])
     elif cmd == 'doc':
         doc(*sys.argv[2:5])
+    elif cmd == 'report':
+        daily_report(len(sys.argv) > 2 and sys.argv[2] == 'send')
     elif cmd == 'ext':
         for e in sys.argv[2:]:
             ext_settings(e)

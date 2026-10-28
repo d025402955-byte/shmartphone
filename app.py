@@ -19,6 +19,7 @@ import admin  # noqa: E402
 import core  # noqa: E402
 import ivr  # noqa: E402
 import nedarim  # noqa: E402
+import report  # noqa: E402
 import store  # noqa: E402
 
 CONFIG_PATH = os.environ.get('SHMARTPHONE_CONFIG', '/etc/shmartphone/app.json')
@@ -187,6 +188,7 @@ def make_handler(cfg):
 
 def alert_worker(cfg, wake):
     last_sync = 0
+    report_retry = 0
     while True:
         try:
             while core.process_one(cfg, cfg['db_path']):
@@ -201,6 +203,12 @@ def alert_worker(cfg, wake):
                 nedarim.sync(cfg, cfg['db_path'])
             except Exception as e:
                 print('NEDARIM_SYNC_ERROR', repr(e)[:300], flush=True)
+        if time.time() > report_retry:
+            try:
+                report.run(cfg, cfg['db_path'], core.send_text_email)
+            except Exception as e:
+                report_retry = time.time() + 900  # SMTP trouble: try again in 15 minutes
+                print('DAILY_REPORT_ERROR', repr(e)[:300], flush=True)
         wake.wait(5)
         wake.clear()
 

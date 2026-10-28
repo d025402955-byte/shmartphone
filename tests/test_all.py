@@ -13,6 +13,7 @@ import core  # noqa: E402
 import importer  # noqa: E402
 import ivr  # noqa: E402
 import nedarim  # noqa: E402
+import report  # noqa: E402
 import store  # noqa: E402
 
 DAY = datetime.date(2026, 10, 23)
@@ -1044,6 +1045,42 @@ class EmailTests(Base):
         self.assertEqual(self.con.execute('SELECT state FROM messages').fetchone()[0], 'emailed')
         del self.cfg['smtp']
         self.assertFalse(core.process_message(self.cfg, self.db))
+
+    def test_daily_report(self):
+        now = time.mktime((2026, 10, 28, 22, 0, 5, 0, 0, -1))
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='prepaid', status='active')
+            self.con.execute("INSERT INTO sessions(call_id,subscriber_id,phone,started,mon_start,ended,status,mode) "
+                             "VALUES('c1',?,'0521234567',?,?,?,'disconnected hangup','activate')",
+                             (sid, now - 4000, now - 3900, now - 300))
+            for i in range(12):
+                self.con.execute("INSERT INTO alerts(subscriber_id,kind,created,state) VALUES(?,'noise',?,'sent')",
+                                 (sid, now - 3000 + i))
+            self.con.execute("INSERT INTO alerts(subscriber_id,kind,created,state) VALUES(?,'verify',?,'failed')",
+                             (sid, now - 100))
+            self.con.execute("INSERT INTO alerts(subscriber_id,kind,created,state) VALUES(?,'noise',?,'sent')",
+                             (sid, now - 90000))  # yesterday: not counted
+            self.con.execute("INSERT INTO payments(subscriber_id,source,plan,amount,created) "
+                             "VALUES(?,'nedarim','monthly',8.9,?)", (sid, now - 50))
+        subject, body = report.build(self.con, now)
+        self.assertIn('28/10/2026', subject)
+        self.assertIn('ניטורים: 1 של 1 מנויים, סה"כ 60 דקות', body)
+        self.assertIn('רעש: נשלחו 12', body)
+        self.assertIn('סה"כ שיחות שיצאו: 12', body)
+        self.assertIn('קיבל 12 התראות רעש', body)
+        self.assertIn('8.9 ₪', body)
+        self.assertIn('1 שיחות אימות מספר נכשלו', body)
+
+        sent = []
+        mail = lambda c, s, b: sent.append(s)  # noqa: E731
+        quiet = lambda *a, **k: None  # noqa: E731
+        self.assertFalse(report.run(self.cfg, self.db, mail, now=now, log=quiet))  # no smtp configured
+        self.cfg['smtp'] = {'host': 'h', 'user': 'u', 'password': 'p', 'to': 't@x'}
+        self.assertFalse(report.run(self.cfg, self.db, mail, now=now - 3600, log=quiet))  # 21:00: too early
+        self.assertTrue(report.run(self.cfg, self.db, mail, now=now, log=quiet))
+        self.assertFalse(report.run(self.cfg, self.db, mail, now=now + 600, log=quiet))  # once a day
+        self.assertTrue(report.run(self.cfg, self.db, mail, now=now + 86400, log=quiet))
+        self.assertEqual(len(sent), 2)
 
 
 class PingAndDepositTests(Base):

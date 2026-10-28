@@ -334,7 +334,6 @@ def fetch_recording(cfg, file_id):
 
 
 def send_email(cfg, msg_row, audio):
-    import smtplib
     from email.message import EmailMessage
     s = cfg['smtp']
     m = EmailMessage()
@@ -348,6 +347,22 @@ def send_email(cfg, msg_row, audio):
                   f"זמן: {time.strftime('%d/%m/%Y %H:%M', time.localtime(msg_row['created']))}\n")
     if audio:
         m.add_attachment(audio, maintype='audio', subtype='mpeg', filename=f"message-{msg_row['id']}.mp3")
+    _smtp_send(s, m)
+
+
+def send_text_email(cfg, subject, body):
+    from email.message import EmailMessage
+    s = cfg['smtp']
+    m = EmailMessage()
+    m['Subject'] = subject
+    m['From'] = s.get('from') or s['user']
+    m['To'] = s.get('report_to') or s['to']
+    m.set_content(body)
+    _smtp_send(s, m)
+
+
+def _smtp_send(s, m):
+    import smtplib
     port = int(s.get('port', 587))
     if port == 465:
         srv = smtplib.SMTP_SSL(s['host'], port, timeout=30)
