@@ -553,7 +553,7 @@ class Call:
         return phones[:8]
 
     def activate(self, intro_override=None):
-        if self.p.get('PBXcallType') == 'out':
+        if self.p.get('PBXcallType') == 'out' and not self.data.get('via_alert'):  # not an alert call's menu
             return self.resume_outbound()
         sub, intro, err = self.subscriber(auto_trial=True)
         if err:
@@ -1066,6 +1066,9 @@ class Call:
         v = self.pending_confirm()  # the same extension also answers verification calls
         if v:
             return self.confirm_menu(v)
+        if self.cfg.get('alert_mode') == 'call':  # as when calling in: what happened since, then the main menu
+            self.data['via_alert'] = True
+            return self.menu()
         row =self.con.execute("SELECT * FROM alerts WHERE kind='disconnected' AND alert_phone=? "
                                "AND state IN ('sent','sending','unknown','demo') AND created>? ORDER BY id DESC LIMIT 1",
                                (self.phone, self.now - 1800)).fetchone()

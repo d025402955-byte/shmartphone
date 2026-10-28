@@ -239,10 +239,11 @@ def set_voice():
 
 
 def set_alerts():
-    """install.py alerts ping|voice|message [offer-voice]  default alert type for subscribers who did not choose."""
+    """install.py alerts ping|voice|message|call [offer-voice]  default alert type for subscribers who did not choose.
+    call = the system calls the parent into the alert extension (needs alert_extension), who hears what happened."""
     mode = (sys.argv[2] if len(sys.argv) > 2 else '').strip().lower()
-    if mode not in ('ping', 'voice', 'message'):
-        print('usage: install.py alerts ping|voice|message')
+    if mode not in ('ping', 'voice', 'message', 'call'):
+        print('usage: install.py alerts ping|voice|message|call')
         return
     with open(NEW_CFG, encoding='utf-8') as f:
         cfg = json.load(f)

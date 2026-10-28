@@ -352,7 +352,8 @@ def add_credit(con, sid, agorot, *, source, amount, confirm=None, transaction_id
     return new
 
 
-ALERT_MODES = {'ping': 'צינתוק חינם', 'voice': 'הודעה קצרה חינם', 'message': 'הודעה קולית בתשלום'}
+ALERT_MODES = {'ping': 'צינתוק חינם', 'voice': 'הודעה קצרה חינם', 'message': 'הודעה קולית בתשלום',
+               'call': 'שיחה מהמערכת'}
 
 
 def charge_alert(con, sid, billing, alert_id):

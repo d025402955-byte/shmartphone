@@ -910,6 +910,35 @@ class AlertReconnectTests(Base):
         self.call(parent, 'remote')
         self.assertIn('כבר מחובר', self.call({**parent, 'rnum': '0521234567'})[0]['files'][0]['text'])
 
+    def test_call_alerts_play_what_happened_then_the_menu(self):
+        self.cfg.update({'alert_mode': 'call', 'alert_extension': '4322'})
+        import urllib.request
+        sent = {}
+
+        class R:
+            def read(self, n): return b'{"status":"OK","errorCode":0}'
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        orig = urllib.request.OpenerDirector.open
+        urllib.request.OpenerDirector.open = lambda s, req, timeout=None: (sent.update(json.loads(req.data)), R())[1]
+        try:
+            core.send_alert(self.cfg, 'noise', '0501112222')  # no spoken text: a call into the alert extension
+        finally:
+            urllib.request.OpenerDirector.open = orig
+        self.assertEqual((sent['messagesType'], sent['extensionActivation']), ('extensionActivation', '4322'))
+        self.assertNotIn('audioText', sent)
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567')
+            self.con.execute("INSERT INTO alerts(unique_key,subscriber_id,call_id,kind,alert_phone,created,state) "
+                             "VALUES('n1',?,'r1','noise','0501112222',?,'sent')", (sid, time.time() - 60))
+        parent = {'PBXphone': '0501112222', 'PBXnum': PBX, 'PBXcallId': 'A9', 'PBXcallStatus': 'CALL',
+                  'PBXcallType': 'out'}
+        r = self.call(parent, 'alert')  # the parent answers: the notices, then the main menu
+        self.assertEqual(r[-1]['name'], 'menu')
+        self.assertIn('זוהה רעש בחדר התינוק', spoken(r[-1]))
+        r = self.call({**parent, 'menu': '3'}, 'alert')  # the menu works as in a call to the system
+        self.assertIn('שְׁמַרְטַפוֹן הוא שירות', spoken(r[0]))
+
     def test_failure_after_timeout(self):
         self.setup_dropped()
         self.call(self.parent, 'alert')

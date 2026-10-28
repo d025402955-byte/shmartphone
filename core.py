@@ -214,6 +214,9 @@ def send_alert(cfg, kind, phone, override_text=None, mode=None):
     if kind == 'message':  # new voicemail (key 9): always a free ring-and-drop to the owner, never a paid call
         return ('demo', {}) if cfg.get('demo') else send_ping({**cfg, 'alert_mode': 'ping'}, kind, phone)
     mode = mode or cfg.get('alert_mode') or 'message'
+    if mode == 'call' and kind in ALERT_KINDS and cfg.get('alert_extension'):
+        # a call into the alert extension: the parent hears what happened, as when calling in, then the menu
+        return send_campaign(cfg, kind, phone, override_text, into_menu=True)
     if kind in PING_CODES and mode in ('ping', 'voice') and not cfg.get('demo'):
         state, result = send_ping({**cfg, 'alert_mode': mode}, kind, phone)
         if state == 'sent':
@@ -223,7 +226,7 @@ def send_alert(cfg, kind, phone, override_text=None, mode=None):
     return send_campaign(cfg, kind, phone, override_text)
 
 
-def send_campaign(cfg, kind, phone, override_text=None):
+def send_campaign(cfg, kind, phone, override_text=None, into_menu=False):
     """Call the Campaign API. Returns (state, result_dict). Raises on transport errors."""
     url = cfg.get('campaign_url', 'https://api.tlivr.com/campaignApi.php')
     payload = campaign_payload(cfg, kind, phone, override_text)
@@ -232,7 +235,7 @@ def send_campaign(cfg, kind, phone, override_text=None):
         if cfg.get('alert_extension') and cfg.get('verify_by_key', True):  # answered there: 'press 1 to confirm'
             payload.pop('audioText', None)
             payload.update({'messagesType': 'extensionActivation', 'extensionActivation': str(cfg['alert_extension'])})
-    if kind == 'disconnected' and cfg.get('alert_extension'):
+    if (kind == 'disconnected' or into_menu) and cfg.get('alert_extension'):
         # interactive alert: the answered call goes into the 'alert' extension, which offers to reconnect
         payload.pop('audioText', None)
         payload.update({'messagesType': 'extensionActivation', 'extensionActivation': str(cfg['alert_extension'])})
