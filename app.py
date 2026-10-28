@@ -115,6 +115,9 @@ def make_handler(cfg):
             if url.path == '/health':
                 return self.send(200, 'text/plain', b'ok')
 
+            if url.path == '/beep.wav':  # played by the PBX when monitoring starts (fileLink)
+                return self.send(200, 'audio/wav', ivr.beep_wav())
+
             if url.path == '/':
                 return self.send(200, 'text/html; charset=utf-8', HOME_PAGE.encode())
 

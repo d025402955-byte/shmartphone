@@ -957,6 +957,11 @@ class VerifyConfirmTests(Base):
         r = self.call({**self.room, 'vw': 'WAIT', 'aconf': '1'})
         self.assertEqual(r[-1]['type'], 'noiseMonitor')
         self.assertIn('אל תנתקו את השיחה', spoken(r[0]))
+        self.assertEqual(r[0]['files'][-1], {'fileLink': 'https://x.example/beep.wav',
+                                             'fileName': 'shmartphone_beep_v1'})  # a beep marks the start
+        wav = ivr.beep_wav()
+        self.assertEqual((wav[:4], wav[8:12]), (b'RIFF', b'WAVE'))
+        self.assertGreater(len(wav), 9000)  # 0.6 s at 8 kHz, 16-bit
 
     def test_typing_the_code_still_works(self):
         self.ask_number()

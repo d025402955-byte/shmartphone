@@ -276,6 +276,29 @@ def spaced(code):
     return ', '.join(code)
 
 
+def beep_wav(freq=1000, seconds=0.6, rate=8000):
+    """A short beep (8 kHz 16-bit mono WAV) that marks the start of monitoring. Served at /beep.wav."""
+    import io
+    import math
+    import struct
+    import wave
+    n, fade = int(rate * seconds), int(rate * 0.02)
+    frames = b''.join(struct.pack('<h', int(12000 * min(1, i / fade, (n - i) / fade) *
+                                            math.sin(2 * math.pi * freq * i / rate))) for i in range(n))
+    buf = io.BytesIO()
+    with wave.open(buf, 'wb') as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(frames)
+    return buf.getvalue()
+
+
+def beep_file(cfg):
+    """The PBX downloads the link once and caches it by fileName (change the name to replace the sound)."""
+    return {'fileLink': cfg['public_url'].rstrip('/') + '/beep.wav', 'fileName': 'shmartphone_beep_v1'}
+
+
 def confirm_by_key(cfg):
     """Verification calls go into the alert extension, where pressing 1 confirms (no code to carry over)."""
     return bool(cfg.get('alert_extension')) and cfg.get('verify_by_key', True)
@@ -685,7 +708,8 @@ class Call:
                            time=self.say_minutes(minutes)))
         if silent:  # call-back to the room phone: nothing may be heard there (the baby is asleep)
             return [cmd]
-        return [say(*intro, t(self.cfg, 'starting')), cmd]
+        beep = beep_file(self.cfg) if self.cfg.get('start_beep', True) else None
+        return [say(*intro, t(self.cfg, 'starting'), beep), cmd]
 
     def per_minute(self):
         return max(1, int((self.cfg.get('payments') or {}).get('per_minute_agorot', 1)))
