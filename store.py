@@ -372,6 +372,18 @@ def charge_alert(con, sid, billing, alert_id):
     return agorot
 
 
+STALE_SESSION_HOURS = 6
+
+
+def close_stale_sessions(con, now=None):
+    """Close calls whose hangup never arrived. Only calls that never started monitoring: those are
+    closed by the monitor's 'disconnected' event, and closing them here would guess the deposit charge."""
+    now = now or time.time()
+    cur = con.execute('UPDATE sessions SET ended=started WHERE ended IS NULL AND mon_start IS NULL AND started<?',
+                      (now - STALE_SESSION_HOURS * 3600,))
+    return cur.rowcount
+
+
 def settle_session(con, call_id, per_minute, now=None):
     """Charge a finished monitoring session to a prepaid deposit, once. Returns agorot charged."""
     now = now or time.time()

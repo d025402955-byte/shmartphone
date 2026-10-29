@@ -203,6 +203,15 @@ def alert_worker(cfg, wake):
                 nedarim.sync(cfg, cfg['db_path'])
             except Exception as e:
                 print('NEDARIM_SYNC_ERROR', repr(e)[:300], flush=True)
+            try:
+                con = store.connect(cfg['db_path'])
+                with con:
+                    n = store.close_stale_sessions(con)
+                con.close()
+                if n:
+                    print('STALE_SESSIONS closed', n, flush=True)
+            except Exception as e:
+                print('STALE_SESSIONS_ERROR', repr(e)[:300], flush=True)
         if time.time() > report_retry:
             try:
                 report.run(cfg, cfg['db_path'], core.send_text_email)

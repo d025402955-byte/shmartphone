@@ -1046,6 +1046,19 @@ class EmailTests(Base):
         del self.cfg['smtp']
         self.assertFalse(core.process_message(self.cfg, self.db))
 
+    def test_stale_sessions(self):
+        now = time.time()
+        with self.con:
+            for cid, started, mon in (('old', now - 7 * 3600, None), ('new', now - 600, None),
+                                      ('oldmon', now - 7 * 3600, now - 7 * 3600)):
+                self.con.execute("INSERT INTO sessions(call_id,started,mon_start,status) VALUES(?,?,?,'menu')",
+                                 (cid, started, mon))
+            self.assertEqual(store.close_stale_sessions(self.con, now), 1)
+        open_ = [r[0] for r in self.con.execute('SELECT call_id FROM sessions WHERE ended IS NULL ORDER BY call_id')]
+        self.assertEqual(open_, ['new', 'oldmon'])  # a monitoring call is never guessed closed
+        page = admin.activity_page(self.cfg, self.con)
+        self.assertNotIn('>old<', page)
+
     def test_daily_report(self):
         now = time.mktime((2026, 10, 28, 22, 0, 5, 0, 0, -1))
         with self.con:

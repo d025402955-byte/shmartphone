@@ -256,7 +256,9 @@ def sub_page(cfg, con, sid, msg=None, err=None):
 
 def activity_page(cfg, con):
     live = con.execute("SELECT x.*, s.name, s.main_phone FROM sessions x LEFT JOIN subscribers s ON s.id=x.subscriber_id "
-                       "WHERE x.ended IS NULL ORDER BY x.started DESC LIMIT 100").fetchall()
+                       "WHERE x.ended IS NULL AND (x.mon_start IS NOT NULL OR x.started>?) "
+                       "ORDER BY x.started DESC LIMIT 100",
+                       (time.time() - store.STALE_SESSION_HOURS * 3600,)).fetchall()
     alerts = con.execute("SELECT a.*, s.main_phone FROM alerts a LEFT JOIN subscribers s ON s.id=a.subscriber_id "
                          "ORDER BY a.id DESC LIMIT 100").fetchall()
     msgs = con.execute("SELECT * FROM messages ORDER BY id DESC LIMIT 50").fetchall()
