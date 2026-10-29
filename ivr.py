@@ -197,7 +197,7 @@ TEXTS = {
     'account_remove': 'להסרת המספר',
     'back_zero': 'לחזרה הקישו 0.',
     'removed': 'המספר הוסר.',
-    'message_prompt': 'השאירו הודעה לשירות הלקוחות, ובסיומה הקישו סולמית.',
+    'message_prompt': 'השאירו הודעה לשירות הלקוחות. בסיום הקישו סולמית, כדי שההודעה תישמר.',
     'message_thanks': 'ההודעה התקבלה.',
     'goodbye': 'להתראות.',
     'account_pay': 'להצטרפות או לחידוש מנוי בתשלום הקישו 5.',
@@ -1664,12 +1664,13 @@ class Call:
         sub = store.find_by_phone(self.con, self.phone)
         self.save('recording', subscriber_id=sub['id'] if sub else None, mode='message')
         folder = self.cfg.get('messages_folder')
-        # a known file name lets us keep the message even if the caller hangs up before '#' and confirming
+        # Technoline keeps a recording only once it ends with '#' (or max): save it right there, no confirm step.
+        # A caller who hangs up before '#' leaves no file; the HANGUP still logs the attempt (email without audio).
         self.data['rec_name'] = 'msg_' + re.sub(r'[^A-Za-z0-9_-]', '', self.call_id)[-40:]
         self.save('recording')
-        return [{'type': 'record', 'name': 'rec', 'max': 180, 'min': 2, 'confirm': 'confirmOnly',
+        return [{'type': 'record', 'name': 'rec', 'max': 180, 'min': 2, 'confirm': 'no',
                  'fileName': self.data['rec_name'], **({'saveFolder': str(folder)} if folder else {}),
-                 'hangupSave': 'yes', 'files': [{'text': t(self.cfg, 'message_prompt')}]}]
+                 'files': [{'text': t(self.cfg, 'message_prompt')}]}]
 
     def store_message(self):
         p = self.p

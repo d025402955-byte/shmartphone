@@ -247,6 +247,7 @@ class IvrTests(Base):
         self.call('0599999999', mode='message', call='m2')
         r = self.send()
         self.assertEqual(r[0]['type'], 'record')
+        self.assertEqual(r[0]['confirm'], 'no')  # saved on '#': no confirm step to hang up in
         r = self.send(rec='file1', FILEID_rec='777', FILE_rec='file1', DURATION_rec='12')
         self.assertEqual(r[-1]['type'], 'hangup')
         m = self.con.execute('SELECT * FROM messages').fetchone()
