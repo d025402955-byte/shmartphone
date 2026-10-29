@@ -333,6 +333,29 @@ def fetch_recording(cfg, file_id):
     return body
 
 
+def files_api(cfg, action, **params):
+    url = cfg.get('files_url', 'https://api.tlivr.com/ivrFilesApi.php')
+    data = urllib.parse.urlencode({'action': action, **params, 'apiKey': cfg['api_key']}).encode()
+    req = urllib.request.Request(url, data=data, headers={'User-Agent': 'curl/8.5.0'}, method='POST')
+    with urllib.request.build_opener(_NoRedirect()).open(req, timeout=60) as resp:
+        return json.loads(resp.read(5 * 1024 * 1024) or b'null')
+
+
+def copy_message_file(cfg, msg_row, api=files_api):
+    """Put a copy of the recording in another extension (e.g. Technoline's voicemail box 9).
+    Returns the new state note, or '' when there is nothing to copy."""
+    target, folder = cfg.get('messages_copy_folder'), cfg.get('messages_folder')
+    if not target or not folder or not msg_row['file_id']:
+        return ''
+    files = api(cfg, 'filesList', extensionId=str(folder))
+    ids = [str(f['id']) for f in files or [] if f.get('ivrName') == msg_row['file_id']
+           or (msg_row['file_name'] and f.get('name') == msg_row['file_name'])]
+    if not ids:
+        return 'copy: file not found'
+    r = api(cfg, 'fileCopy', fileId=ids[0], target=str(target))
+    return '' if (r or {}).get('status') == 'OK' else 'copy: ' + json.dumps(r, ensure_ascii=False)[:150]
+
+
 def send_email(cfg, msg_row, audio):
     from email.message import EmailMessage
     s = cfg['smtp']
@@ -344,7 +367,9 @@ def send_email(cfg, msg_row, audio):
     m.set_content(f"הודעה קולית לשירות הלקוחות\nמטלפון: {msg_row['phone']}\n"
                   f"מנוי: {('#' + str(sub)) if sub else 'לא רשום'}\n"
                   f"אורך: {int(msg_row['duration'] or 0)} שניות\n"
-                  f"זמן: {time.strftime('%d/%m/%Y %H:%M', time.localtime(msg_row['created']))}\n")
+                  f"זמן: {time.strftime('%d/%m/%Y %H:%M', time.localtime(msg_row['created']))}\n"
+                  + ('' if audio else "\nאין הקלטה: המתקשר ניתק לפני שסיים את ההקלטה בסולמית, "
+                                      "וטכנוליין לא שומרים הקלטה שלא הסתיימה.\n"))
     if audio:
         m.add_attachment(audio, maintype='audio', subtype='mpeg', filename=f"message-{msg_row['id']}.mp3")
     _smtp_send(s, m)
@@ -374,7 +399,7 @@ def _smtp_send(s, m):
         srv.send_message(m)
 
 
-def process_message(cfg, db_path, fetch=fetch_recording, mail=send_email, log=print):
+def process_message(cfg, db_path, fetch=fetch_recording, mail=send_email, log=print, copy=copy_message_file):
     if not cfg.get('smtp'):
         return False
     con = store.connect(db_path)
@@ -394,6 +419,10 @@ def process_message(cfg, db_path, fetch=fetch_recording, mail=send_email, log=pr
         state, result = 'emailed', ''
     except Exception as e:
         state, result = 'failed', repr(e)[:300]
+    try:
+        result = (result + ' ' + copy(cfg, row)).strip()
+    except Exception as e:
+        result = (result + ' copy: ' + repr(e)[:150]).strip()
     log('MESSAGE', row['id'], state, result, flush=True)
     con = store.connect(db_path)
     with con:

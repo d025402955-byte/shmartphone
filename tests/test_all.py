@@ -1046,6 +1046,22 @@ class EmailTests(Base):
         del self.cfg['smtp']
         self.assertFalse(core.process_message(self.cfg, self.db))
 
+    def test_message_copied_to_voicemail_box(self):
+        self.cfg.update({'messages_folder': '12116', 'messages_copy_folder': '12101'})
+        calls = []
+
+        def api(cfg, action, **kw):
+            calls.append((action, kw))
+            if action == 'filesList':
+                return [{'id': 7, 'name': 'msg_x', 'ivrName': 'abc'}, {'id': 8, 'name': 'other', 'ivrName': 'zzz'}]
+            return {'status': 'OK'}
+        row = {'file_id': 'abc', 'file_name': 'msg_x'}
+        self.assertEqual(core.copy_message_file(self.cfg, row, api), '')
+        self.assertEqual(calls[-1], ('fileCopy', {'fileId': '7', 'target': '12101'}))
+        self.assertEqual(core.copy_message_file(self.cfg, {'file_id': None, 'file_name': 'msg_x'}, api), '')
+        self.assertEqual(core.copy_message_file(self.cfg, {'file_id': 'nope', 'file_name': 'nope'}, api),
+                         'copy: file not found')
+
     def test_stale_sessions(self):
         now = time.time()
         with self.con:

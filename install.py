@@ -317,7 +317,7 @@ def set_voicemail_pin():
     print('voicemail code saved')
 
 
-SETTABLE = {'messages_folder', 'niqqud', 'message_notify_phone'}
+SETTABLE = {'messages_folder', 'messages_copy_folder', 'niqqud', 'message_notify_phone'}
 
 
 def set_value():
