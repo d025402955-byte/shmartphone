@@ -148,6 +148,7 @@ class IvrTests(Base):
         self.assertEqual(self.ask_name(r), 'anum')
         sub = store.find_by_phone(self.con, '0521234567')
         self.assertEqual((sub['status'], sub['expires']), ('trial', '2026-10-30'))
+        self.assertFalse(store.trial_renewable(sub, datetime.date(2026, 11, 5)))  # one trial only, no renewal
 
     def test_disabled_rejected_and_no_auto_trial(self):
         sid = self.sub_with(status='disabled')

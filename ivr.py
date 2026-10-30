@@ -345,6 +345,8 @@ class Call:
             exp = (self.day + datetime.timedelta(days=days)).isoformat()
             sid = store.create_subscriber(self.con, main_phone=self.phone, plan='trial', status='trial',
                                           expires=exp, notes='נרשם אוטומטית בשיחה ראשונה')
+            # one trial per subscriber: this first one already counts, no renewed trial after it
+            self.con.execute('UPDATE subscribers SET trial_renewed=? WHERE id=?', (time.time(), sid))
             sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sid,)).fetchone()
             intro = t(self.cfg, 'welcome_trial', days=days)
         elif sub['status'] == 'trial' and not sub['expires']:  # a renewed trial: its days start with this call
