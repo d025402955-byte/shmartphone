@@ -169,10 +169,17 @@ def make_handler(cfg):
                 return self.send(status, 'text/plain', msg.encode())
 
             if parts and parts[0] == 'admin':
-                if not admin.authorized(cfg, self.headers, self.client_ip()):
-                    return self.send(401, 'text/plain; charset=utf-8', 'נדרשת התחברות'.encode(),
-                                     {'WWW-Authenticate': 'Basic realm="shmartphone", charset="UTF-8"'})
                 body = self.body() if method == 'POST' else b''
+                if parts[1:] == ['login']:
+                    return self.send(*admin.login(cfg, method, url.query, self.headers, body, self.client_ip()))
+                if parts[1:] == ['logout']:
+                    return self.send(*admin.logout())
+                if not admin.authorized(cfg, self.headers, self.client_ip()):
+                    if method == 'GET':  # the login page, then back here
+                        nxt = url.path + ('?' + url.query if url.query else '')
+                        return self.send(303, 'text/plain', b'',
+                                         {'Location': '/admin/login?' + urllib.parse.urlencode({'next': nxt})})
+                    return self.send(401, 'text/plain; charset=utf-8', 'נדרשת התחברות'.encode())
                 con = store.connect(cfg['db_path'])
                 try:
                     status, ctype, out, extra = admin.handle(cfg, con, method, url.path, url.query,

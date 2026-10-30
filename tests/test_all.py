@@ -89,23 +89,22 @@ class StoreTests(Base):
         self.assertEqual(store.find_by_phone(self.con, '0544444444')['id'], old)  # its main phone is untouched
         self.assertEqual(store.find_by_phone(self.con, '0529999999')['id'], other)
 
-    def test_renew_trials(self):
+    def test_lapsed_subscribers_get_one_more_trial(self):
         with self.con:
             ids = {s: store.create_subscriber(self.con, main_phone=p, status=st, plan=pl, expires=ex)
                    for s, p, st, pl, ex in (('cancelled', '0521000001', 'cancelled', 'monthly', '2026-01-01'),
                                             ('disabled', '0521000002', 'disabled', 'annual', None),
                                             ('expired', '0521000003', 'trial', 'trial', '2026-10-01'),
                                             ('paid', '0521000004', 'active', 'monthly', '2099-01-01'),
-                                            ('free', '0521000005', 'active', 'free', None),
-                                            ('trial', '0521000006', 'trial', 'trial', '2099-01-01'))}
-            self.assertEqual(store.renewable_count(self.con, DAY), 3)
-            self.assertEqual(store.renew_trials(self.con, DAY), 3)
-        rows = {r['id']: r for r in self.con.execute('SELECT * FROM subscribers')}
-        for k in ('cancelled', 'disabled', 'expired'):
-            self.assertEqual((rows[ids[k]]['status'], rows[ids[k]]['expires']), ('trial', None))
-        self.assertEqual(rows[ids['paid']]['status'], 'active')
-        self.assertEqual(rows[ids['trial']]['expires'], '2099-01-01')
-        self.assertIn('ניסיון חדש לכל', admin.list_page(self.cfg, self.con, {}, DAY))
+                                            ('prepaid', '0521000005', 'active', 'prepaid', None))}
+        subs = {k: self.con.execute('SELECT * FROM subscribers WHERE id=?', (v,)).fetchone() for k, v in ids.items()}
+        self.assertEqual([k for k, s in subs.items() if store.trial_renewable(s, DAY)],
+                         ['cancelled', 'disabled', 'expired'])
+        with self.con:
+            store.renew_trial(self.con, ids['cancelled'], DAY, 7)
+        s = self.con.execute('SELECT * FROM subscribers WHERE id=?', (ids['cancelled'],)).fetchone()
+        self.assertEqual((s['status'], s['expires']), ('trial', '2026-10-30'))
+        self.assertFalse(store.trial_renewable(s, datetime.date(2026, 11, 5)))  # once only
 
     def test_unique_phones(self):
         with self.con:
@@ -151,7 +150,9 @@ class IvrTests(Base):
         self.assertEqual((sub['status'], sub['expires']), ('trial', '2026-10-30'))
 
     def test_disabled_rejected_and_no_auto_trial(self):
-        self.sub_with(status='disabled')
+        sid = self.sub_with(status='disabled')
+        with self.con:  # already had the one renewed trial
+            self.con.execute('UPDATE subscribers SET trial_renewed=1 WHERE id=?', (sid,))
         self.assertEqual(self.call('0521234567')[-1]['type'], 'hangup')
         self.cfg['auto_trial_days'] = 0
         self.assertEqual(self.call('0539999999', call='c2')[-1]['type'], 'hangup')
@@ -497,6 +498,36 @@ class AdminTests(Base):
             admin.authorized(self.cfg, self.auth('wrong'), '9.9.9.9')
         self.assertFalse(admin.authorized(self.cfg, self.auth(), '9.9.9.9'))  # locked out
 
+    def test_login_page(self):
+        form = {'Content-Type': 'application/x-www-form-urlencoded'}
+        st, _, out, hdr = admin.login(self.cfg, 'GET', 'next=/admin/activity', {}, b'', '2.2.2.1')
+        self.assertEqual(st, 200)
+        self.assertIn('type="password"', out.decode())
+        self.assertNotIn(admin.csrf_token(self.cfg), out.decode())  # not shown before login
+        st, _, out, hdr = admin.login(self.cfg, 'POST', '', form, b'password=wrong', '2.2.2.1')
+        self.assertIn('סיסמה שגויה', out.decode())
+        self.assertNotIn('Set-Cookie', hdr)
+        st, _, _, hdr = admin.login(self.cfg, 'POST', 'next=/admin/activity', form, b'password=secretpw1', '2.2.2.1')
+        self.assertEqual((st, hdr['Location']), (303, '/admin/activity'))
+        cookie = hdr['Set-Cookie'].split(';')[0]
+        self.assertTrue(admin.authorized(self.cfg, {'Cookie': 'a=b; ' + cookie}, '2.2.2.2'))
+        self.assertFalse(admin.authorized(self.cfg, {'Cookie': cookie + 'x'}, '2.2.2.3'))
+        self.cfg['admin_password_hash'] = admin.hash_password('newpass1', rounds=1000)
+        self.assertFalse(admin.authorized(self.cfg, {'Cookie': cookie}, '2.2.2.4'))  # password changed
+        st, _, _, hdr = admin.login(self.cfg, 'GET', 'next=https://evil.example', {}, b'', '2.2.2.5')
+        self.assertNotIn('evil', admin.login(self.cfg, 'GET', 'next=https://evil.example', {}, b'', '2.2.2.5')[2].decode())
+
+    def test_list_sort(self):
+        with self.con:
+            store.create_subscriber(self.con, main_phone='0521000001', name='בתיה', expires='2027-01-01')
+            store.create_subscriber(self.con, main_phone='0521000002', name='אבי', expires='2026-12-01')
+        out = admin.list_page(self.cfg, self.con, {'sort': ['name'], 'dir': ['asc']}, DAY)
+        self.assertLess(out.index('אבי'), out.index('בתיה'))
+        out = admin.list_page(self.cfg, self.con, {'sort': ['expires'], 'dir': ['desc']}, DAY)
+        self.assertLess(out.index('בתיה'), out.index('אבי'))
+        out = admin.list_page(self.cfg, self.con, {'sort': ['x; DROP'], 'dir': ['asc']}, DAY)  # unknown: by id
+        self.assertIn('data-server-sort', out)
+
     def post(self, path, **fields):
         fields.setdefault('csrf', admin.csrf_token(self.cfg))
         body = '&'.join(f'{k}={v}' for k, v in fields.items()).encode()
@@ -634,6 +665,7 @@ class PaymentTests(Base):
         with self.con:
             sid = store.create_subscriber(self.con, main_phone='0521234567', plan='trial', status='trial',
                                           expires='2026-10-01')
+            self.con.execute('UPDATE subscribers SET trial_renewed=1 WHERE id=?', (sid,))  # renewal used
         r = self.go()
         self.assertEqual(r[0]['name'], 'pplan')
         self.assertIn('הסתיימה', r[0]['files'][0]['text'])
@@ -663,6 +695,7 @@ class PaymentTests(Base):
     def test_annual_and_failure_and_enforcement(self):
         with self.con:
             sid = store.create_subscriber(self.con, main_phone='0521234567', status='disabled')
+            self.con.execute('UPDATE subscribers SET trial_renewed=1 WHERE id=?', (sid,))  # renewal used
         self.go()
         r = self.go(pplan='2')
         self.assertEqual((r[-1]['sum'], r[-1]['paymentsMode']), (82, 'regular'))
@@ -916,6 +949,20 @@ class AlertReconnectTests(Base):
         self.assertEqual(exp, (DAY + datetime.timedelta(days=7)).isoformat())
         r = self.call({**caller, 'PBXcallId': 'T2'})  # the next call does not restart it
         self.assertNotIn('תקופת ניסיון', spoken(r[-1]))
+
+    def test_cancelled_subscriber_calling_gets_one_more_trial(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0551234561', plan='monthly', status='cancelled',
+                                          expires='2026-01-01')
+        caller = {'PBXphone': '0551234561', 'PBXnum': PBX, 'PBXcallId': 'U1', 'PBXcallStatus': 'CALL'}
+        r = self.call(caller)
+        self.assertIn('תקופת ניסיון של 7 ימים', spoken(r[-1]))
+        self.assertEqual(r[-1]['name'], 'anum')
+        with self.con:  # the renewed trial ran out: no third one
+            self.con.execute("UPDATE subscribers SET expires='2026-10-01' WHERE id=?", (sid,))
+        r = self.call({**caller, 'PBXcallId': 'U2'})
+        self.assertNotIn('תקופת ניסיון של', spoken(r[-1]))
+        self.assertNotEqual(r[-1].get('name'), 'anum')
 
     def test_pay_menu_tells_active_subscribers_they_need_not_join(self):
         self.cfg['payments'] = {'monthly': 8.9, 'annual': 82}

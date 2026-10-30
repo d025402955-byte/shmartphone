@@ -166,12 +166,13 @@ def install():
         except Exception as e:
             print('health', url.split('/')[2], 'FAILED', repr(e)[:120])
     try:
-        urllib.request.urlopen(cfg['public_url'] + '/admin', timeout=10)
+        with urllib.request.urlopen(cfg['public_url'] + '/admin', timeout=10) as r:
+            print('admin page:', 'OK (asks for password)' if '/admin/login' in r.url else f'OPEN? {r.url}')
     except urllib.error.HTTPError as e:
-        print('admin page:', 'OK (asks for password)' if e.code == 401 else f'HTTP {e.code}')
+        print('admin page:', f'HTTP {e.code}')
     except Exception as e:
         print('admin page: FAILED', repr(e)[:120])
-    print('\nadmin:', cfg['public_url'] + '/admin   (user: admin)')
+    print('\nadmin:', cfg['public_url'] + '/admin')
     print('demo mode:', cfg.get('demo'))
 
 

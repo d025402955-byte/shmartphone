@@ -124,7 +124,7 @@ MIGRATIONS = {
     'alerts': [('payload', 'TEXT'), ('not_before', 'REAL'), ('heard', 'REAL'), ('charged', 'INTEGER')],
     'noise_events': [('file_name', 'TEXT'), ('folder', 'TEXT'), ('file_url', 'TEXT')],
     'subscribers': [('billing', 'TEXT'), ('keva_id', 'TEXT'), ('balance', 'INTEGER'), ('alert_mode', 'TEXT'),
-                    ('alert_extra', 'TEXT'), ('alert_backup', 'TEXT')],
+                    ('alert_extra', 'TEXT'), ('alert_backup', 'TEXT'), ('trial_renewed', 'REAL')],
 }
 
 GRACE_DAYS = 5  # a paid subscription keeps working this many days after its paid-until date
@@ -500,20 +500,21 @@ def add_phone(con, sid, phone, label='', max_phones=5):
     audit(con, 'add_phone', {'id': sid, 'phone': p})
 
 
-RENEWABLE_WHERE = ("(status IN ('cancelled','disabled') OR (status IN ('active','trial') AND plan NOT IN ('free','prepaid') "
-                   "AND expires IS NOT NULL AND expires<?)) AND main_phone NOT LIKE '%-old%'")  # not a released phone
+def trial_renewable(sub, day, enforce_active_expiry=False):
+    """A cancelled, disabled or expired subscriber gets one more trial when they call, once ever."""
+    if sub['trial_renewed'] or '-old' in sub['main_phone']:
+        return False
+    if sub['status'] in ('cancelled', 'disabled'):
+        return True
+    if sub['plan'] in ('free', 'prepaid'):  # a deposit that ran out is topped up, not renewed
+        return False
+    return not authorization(sub, day, enforce_active_expiry)[0]
 
 
-def renewable_count(con, day):
-    return con.execute(f'SELECT COUNT(*) FROM subscribers WHERE {RENEWABLE_WHERE}', (day.isoformat(),)).fetchone()[0]
-
-
-def renew_trials(con, day):
-    """Give every cancelled, disabled and expired subscriber a new trial, whose days start with their next call."""
-    cur = con.execute(f"UPDATE subscribers SET status='trial', plan='trial', expires=NULL, next_charge=NULL, updated=? "
-                      f"WHERE {RENEWABLE_WHERE}", (time.time(), day.isoformat()))
-    audit(con, 'renew_trials', {'count': cur.rowcount})
-    return cur.rowcount
+def renew_trial(con, sid, day, days):
+    con.execute("UPDATE subscribers SET status='trial', plan='trial', expires=?, next_charge=NULL, trial_renewed=?, "
+                "updated=? WHERE id=?", ((day + datetime.timedelta(days=days)).isoformat(), time.time(), time.time(), sid))
+    audit(con, 'trial_renew', {'id': sid, 'days': days})
 
 
 def remove_phone(con, sid, phone_id):

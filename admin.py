@@ -38,12 +38,76 @@ def csrf_token(cfg):
     return hmac.new(cfg['secret_key'].encode(), b'csrf', 'sha256').hexdigest()[:32]
 
 
-def authorized(cfg, headers, ip):
-    now = time.time()
+SESSION_COOKIE = 'shm_admin'
+SESSION_DAYS = 30
+
+
+def _session_sig(cfg, expiry):
+    # the password hash is part of the key: changing the password logs every browser out
+    key = (cfg['secret_key'] + cfg.get('admin_password_hash', '')).encode()
+    return hmac.new(key, f'session:{expiry}'.encode(), 'sha256').hexdigest()
+
+
+def session_cookie(cfg, now=None):
+    expiry = int((now or time.time()) + SESSION_DAYS * 86400)
+    return (f'{SESSION_COOKIE}={expiry}.{_session_sig(cfg, expiry)}; Path=/admin; Max-Age={SESSION_DAYS * 86400}; '
+            'HttpOnly; Secure; SameSite=Lax')
+
+
+def has_session(cfg, headers, now=None):
+    for part in (headers.get('Cookie') or '').split(';'):
+        name, _, value = part.strip().partition('=')
+        if name != SESSION_COOKIE:
+            continue
+        expiry, _, sig = value.partition('.')
+        if expiry.isdigit() and int(expiry) > (now or time.time()) and \
+                hmac.compare_digest(sig, _session_sig(cfg, int(expiry))):
+            return True
+    return False
+
+
+def locked_out(ip, now=None):
+    now = now or time.time()
     fails = [t for t in _fails.get(ip, []) if now - t < 600]
     _fails[ip] = fails
-    if len(fails) >= 10:
+    return len(fails) >= 10
+
+
+def login(cfg, method, query, headers, body, ip):
+    """The login page (no session needed). Returns (status, content_type, bytes, extra_headers)."""
+    q = urllib.parse.parse_qs(query)
+    nxt = (q.get('next') or ['/admin'])[0]
+    if not nxt.startswith('/admin') or nxt.startswith('/admin/login'):
+        nxt = '/admin'
+    err = None
+    if method == 'POST':
+        f, _ = parse_form(headers, body)
+        if locked_out(ip):
+            err = 'יותר מדי ניסיונות. נסו שוב בעוד 10 דקות.'
+        elif check_password(f.get('password', ''), cfg.get('admin_password_hash', '')):
+            return 303, 'text/plain', b'', {'Location': nxt, 'Set-Cookie': session_cookie(cfg)}
+        else:
+            _fails.setdefault(ip, []).append(time.time())
+            err = 'סיסמה שגויה'
+    form = f"""<div class="card" style="max-width:360px;margin:40px auto"><h2>כניסה לניהול</h2>
+<form method="post" action="/admin/login?{E(urllib.parse.urlencode({'next': nxt}))}">
+<label>סיסמה<input type="password" name="password" autofocus required autocomplete="current-password"></label>
+<p><button>כניסה</button></p></form></div>"""
+    return 200, 'text/html; charset=utf-8', page('כניסה', form, err=err, nav=False).encode(), {}
+
+
+def logout():
+    return 303, 'text/plain', b'', {'Location': '/admin/login',
+                                    'Set-Cookie': f'{SESSION_COOKIE}=; Path=/admin; Max-Age=0; HttpOnly; Secure'}
+
+
+def authorized(cfg, headers, ip):
+    if has_session(cfg, headers):
+        return True
+    if locked_out(ip):
         return False
+    now = time.time()
+    fails = _fails[ip]
     auth = headers.get('Authorization', '')
     if not auth.startswith('Basic '):
         return False
@@ -80,18 +144,55 @@ label{display:flex;flex-direction:column;gap:4px;color:var(--muted);font-size:13
 """
 
 
-def page(title, body, msg=None, err=None):
+SORT_JS = """
+// click a column title to sort that table (again: reverse). Tables sorted by the server have data-server-sort.
+document.querySelectorAll('table:not([data-server-sort])').forEach(function (table) {
+  var head = table.rows[0];
+  if (!head || !head.cells.length || head.cells[0].tagName !== 'TH') return;
+  function key(cell) {
+    var s = (cell ? cell.textContent : '').trim();
+    var d = s.match(/^(\\d\\d)\\/(\\d\\d)\\/(\\d{4})(?: (\\d\\d):(\\d\\d))?/);
+    if (d) return [1, +(d[3] + d[2] + d[1] + (d[4] || '00') + (d[5] || '00'))];
+    var n = s.replace(/[^\\d.\\-]/g, '');
+    if (n && /^[\\d#₪.\\- ]+(שנ'|דק')?$/.test(s) && !/^0\\d{8,9}$/.test(s)) return [1, parseFloat(n)];
+    return [2, s];
+  }
+  Array.prototype.forEach.call(head.cells, function (th, i) {
+    if (!th.textContent.trim()) return;
+    th.style.cursor = 'pointer';
+    th.title = 'מיון';
+    th.addEventListener('click', function () {
+      var dir = th.dataset.dir === 'asc' ? 'desc' : 'asc';
+      Array.prototype.forEach.call(head.cells, function (c) { delete c.dataset.dir; c.textContent = c.textContent.replace(/ [▲▼]$/, ''); });
+      th.dataset.dir = dir;
+      th.textContent += dir === 'asc' ? ' ▲' : ' ▼';
+      var rows = Array.prototype.slice.call(table.rows, 1);
+      rows.sort(function (a, b) {
+        var x = key(a.cells[i]), y = key(b.cells[i]);
+        var r = x[0] - y[0] || (x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : 0);
+        if (typeof x[1] === 'string' && typeof y[1] === 'string' && x[0] === y[0]) r = x[1].localeCompare(y[1], 'he');
+        return dir === 'asc' ? r : -r;
+      });
+      rows.forEach(function (r) { r.parentNode.appendChild(r); });
+    });
+  });
+});
+"""
+
+
+def page(title, body, msg=None, err=None, nav=True):
     m = ''
     if msg:
         m = f'<div class="msg">{E(msg)}</div>'
     if err:
         m += f'<div class="msg err">{E(err)}</div>'
+    links = """<a href="/admin">מנויים</a><a href="/admin/new">מנוי חדש</a><a href="/admin/activity">פעילות</a>
+<a href="/admin/import">ייבוא</a><a href="/admin/export.csv">ייצוא CSV</a><a href="/admin/logout">יציאה</a>""" if nav else ''
     return f"""<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{E(title)} · שמרטפון</title>
 <style>{STYLE}</style></head><body><header><b>שמרטפון · ניהול</b>
-<a href="/admin">מנויים</a><a href="/admin/new">מנוי חדש</a><a href="/admin/activity">פעילות</a>
-<a href="/admin/import">ייבוא</a><a href="/admin/export.csv">ייצוא CSV</a></header>
-<main>{m}{body}</main></body></html>"""
+{links}</header>
+<main>{m}{body}</main><script>{SORT_JS}</script></body></html>"""
 
 
 def hidden(cfg):
@@ -135,6 +236,13 @@ def sub_form(cfg, s=None):
 
 # ---------- pages ----------
 
+LIST_SORTS = {  # column -> (title, SQL); the list is paged, so it sorts in the database
+    'id': ('#', 's.id'), 'name': ('שם', "NULLIF(s.name,'') IS NULL, s.name"), 'phone': ('טלפון ראשי', 's.main_phone'),
+    'nph': ('נוספים', 'nph'), 'status': ('סטטוס', 's.status'), 'plan': ('סוג', 's.plan'),
+    'expires': ('תוקף', 's.expires IS NULL, s.expires'), 'alert': ('התראות ל', "COALESCE(s.alert_phone,'')"),
+}
+
+
 def list_page(cfg, con, q, day):
     term = q.get('q', [''])[0].strip()
     status = q.get('status', [''])[0]
@@ -152,9 +260,13 @@ def list_page(cfg, con, q, day):
         where.append('s.status=?')
         args.append(status)
     w = ('WHERE ' + ' AND '.join(where)) if where else ''
+    sort = q.get('sort', ['id'])[0]
+    sort = sort if sort in LIST_SORTS else 'id'
+    desc = q.get('dir', ['desc' if sort == 'id' else 'asc'])[0] == 'desc'
+    order = f"{LIST_SORTS[sort][1]} {'DESC' if desc else 'ASC'}, s.id DESC"
     total = con.execute(f'SELECT COUNT(*) FROM subscribers s {w}', args).fetchone()[0]
     rows = con.execute(f'SELECT s.*, (SELECT COUNT(*) FROM phones p WHERE p.subscriber_id=s.id) AS nph '
-                       f'FROM subscribers s {w} ORDER BY s.id DESC LIMIT ? OFFSET ?',
+                       f'FROM subscribers s {w} ORDER BY {order} LIMIT ? OFFSET ?',
                        args + [PAGE_SIZE, (pg - 1) * PAGE_SIZE]).fetchall()
     counts = dict(con.execute('SELECT status, COUNT(*) FROM subscribers GROUP BY status').fetchall())
     trs = []
@@ -170,23 +282,22 @@ def list_page(cfg, con, q, day):
     stat_opts = {'': 'הכל', **store.STATUSES, 'expired': 'פג תוקף'}
     nav = ''
     pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
+    base = urllib.parse.urlencode({'q': term, 'status': status, 'sort': sort, 'dir': 'desc' if desc else 'asc'})
+    ths = ''.join(
+        f"<th><a href='/admin?{urllib.parse.urlencode({'q': term, 'status': status, 'sort': k, 'dir': 'asc' if k == sort and desc else ('desc' if k == sort else 'asc')})}'"
+        f" style='color:inherit;text-decoration:none'>{E(title)}{(' ▼' if desc else ' ▲') if k == sort else ''}</a></th>"
+        for k, (title, _) in LIST_SORTS.items())
     if pages > 1:
-        base = urllib.parse.urlencode({'q': term, 'status': status})
         nav = ' '.join(
             f"<a class='btn{'' if i == pg else ' btn2'}' href='/admin?{base}&p={i}'>{i}</a>"
             for i in range(max(1, pg - 5), min(pages, pg + 5) + 1))
     summary = ' · '.join(f'{E(v)}: {counts.get(k, 0)}' for k, v in store.STATUSES.items())
-    renewable = store.renewable_count(con, day)
     return page('מנויים', f"""<div class="card"><form class="row" method="get" action="/admin">
 <label>חיפוש (שם / טלפון)<input name="q" value="{E(term)}"></label>
 <label>סטטוס<select name="status">{options(stat_opts, status)}</select></label>
 <button>חיפוש</button><a class="btn btn2" href="/admin/new">+ מנוי חדש</a></form>
-<p class="muted">{total} תוצאות · {summary}</p>
-<form method="post" action="/admin/renew_trials" class="row"
- onsubmit="return confirm('לתת ניסיון חדש ל-{renewable} מנויים? הימים יתחילו להיספר מהשיחה הבאה של כל אחד.')">{hidden(cfg)}
-<button class="btn2">ניסיון חדש לכל המבוטלים, המושבתים ופגי התוקף ({renewable})</button></form></div>
-<div class="wrap"><table><tr><th>#</th><th>שם</th><th>טלפון ראשי</th><th>נוספים</th><th>סטטוס</th><th>סוג</th>
-<th>תוקף</th><th>התראות ל</th></tr>{''.join(trs)}</table></div><p>{nav}</p>""")
+<p class="muted">{total} תוצאות · {summary}</p></div>
+<div class="wrap"><table data-server-sort><tr>{ths}</tr>{''.join(trs)}</table></div><p>{nav}</p>""")
 
 
 def new_page(cfg, msg=None, err=None, values=None):
@@ -380,12 +491,6 @@ def handle(cfg, con, method, path, query, headers, body, day):
         return redirect(f'/admin/sub/{sid}?m=created')
     if parts == ['activity']:
         return html_ok(activity_page(cfg, con))
-    if parts == ['renew_trials'] and method == 'POST':
-        with con:
-            n = store.renew_trials(con, day)
-        return html_ok(page('מנויים', f'<div class="card"><p>{n} מנויים קיבלו ניסיון חדש. הימים יתחילו להיספר '
-                                       f'מהשיחה הבאה של כל אחד.</p><a class="btn" href="/admin?status=trial">'
-                                       f'לרשימת המנויים</a></div>'))
     if len(parts) == 2 and parts[0] == 'msg' and parts[1].endswith('.mp3') and parts[1][:-4].isdigit():
         m = con.execute('SELECT * FROM messages WHERE id=?', (int(parts[1][:-4]),)).fetchone()
         if not m or not m['file_id']:

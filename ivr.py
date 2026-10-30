@@ -349,9 +349,13 @@ class Call:
             intro = t(self.cfg, 'welcome_trial', days=days)
         elif sub['status'] == 'trial' and not sub['expires']:  # a renewed trial: its days start with this call
             days = int(self.cfg.get('auto_trial_days', 0) or 7)
-            store.update_subscriber(self.con, sub['id'],
-                                    expires=(self.day + datetime.timedelta(days=days)).isoformat())
-            store.audit(self.con, 'trial_start', {'id': sub['id'], 'days': days})
+            store.renew_trial(self.con, sub['id'], self.day, days)  # counts as their one renewed trial
+            sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
+            intro = t(self.cfg, 'welcome_trial', days=days)
+        elif auto_trial and not allow_inactive and \
+                store.trial_renewable(sub, self.day, self.cfg.get('enforce_active_expiry', False)):
+            days = int(self.cfg.get('auto_trial_days', 0) or 7)  # one more trial, once, for a lapsed subscriber
+            store.renew_trial(self.con, sub['id'], self.day, days)
             sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
             intro = t(self.cfg, 'welcome_trial', days=days)
         if not allow_inactive:
