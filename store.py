@@ -466,18 +466,54 @@ def extend(con, sid, months, day):
     return new
 
 
+def is_active_subscriber(sub, day=None):
+    """A paying / free subscriber in good standing. A trial is not one."""
+    return sub['status'] == 'active' and authorization(sub, day or datetime.date.today())[0]
+
+
+def release_phone(con, owner, phone, to_sid):
+    """Free a phone held by a subscriber who is not active, so another subscriber can take it as an extra phone.
+    A main phone is renamed (the old record and its history stay, cancelled); an extra phone is removed."""
+    if owner['main_phone'] == phone:
+        con.execute("UPDATE subscribers SET main_phone=?, status='cancelled', updated=?, "
+                    "notes=TRIM(notes || ' ' || ?) WHERE id=?",
+                    (f'{phone}-old{owner["id"]}', time.time(), f'המספר עבר כמספר משנה למנוי #{to_sid}', owner['id']))
+    else:
+        con.execute('DELETE FROM phones WHERE subscriber_id=? AND phone=?', (owner['id'], phone))
+    audit(con, 'release_phone', {'id': owner['id'], 'phone': phone, 'to': to_sid})
+
+
 def add_phone(con, sid, phone, label='', max_phones=5):
     p = norm_phone(phone)
     if not valid_phone(p):
         raise ValueError('מספר טלפון לא תקין')
-    if phone_owner(con, p):
-        raise ValueError('המספר כבר רשום')
+    owner = find_by_phone(con, p)
+    if owner and (owner['id'] == sid or is_active_subscriber(owner)):
+        raise ValueError('המספר כבר רשום' if owner['id'] == sid else 'המספר רשום כמנוי פעיל')
     n = con.execute('SELECT COUNT(*) FROM phones WHERE subscriber_id=?', (sid,)).fetchone()[0]
     if n >= max_phones:
         raise ValueError(f'הגעת למקסימום {max_phones} טלפונים נוספים למנוי')
+    if owner:
+        release_phone(con, owner, p, sid)
     con.execute('INSERT INTO phones(subscriber_id,phone,label,created) VALUES(?,?,?,?)',
                 (sid, p, label or '', time.time()))
     audit(con, 'add_phone', {'id': sid, 'phone': p})
+
+
+RENEWABLE_WHERE = ("(status IN ('cancelled','disabled') OR (status IN ('active','trial') AND plan NOT IN ('free','prepaid') "
+                   "AND expires IS NOT NULL AND expires<?)) AND main_phone NOT LIKE '%-old%'")  # not a released phone
+
+
+def renewable_count(con, day):
+    return con.execute(f'SELECT COUNT(*) FROM subscribers WHERE {RENEWABLE_WHERE}', (day.isoformat(),)).fetchone()[0]
+
+
+def renew_trials(con, day):
+    """Give every cancelled, disabled and expired subscriber a new trial, whose days start with their next call."""
+    cur = con.execute(f"UPDATE subscribers SET status='trial', plan='trial', expires=NULL, next_charge=NULL, updated=? "
+                      f"WHERE {RENEWABLE_WHERE}", (time.time(), day.isoformat()))
+    audit(con, 'renew_trials', {'count': cur.rowcount})
+    return cur.rowcount
 
 
 def remove_phone(con, sid, phone_id):

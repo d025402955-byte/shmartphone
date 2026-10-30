@@ -70,6 +70,43 @@ class StoreTests(Base):
             sid2 = store.create_subscriber(self.con, main_phone='0521111112', expires='2026-01-31')
             self.assertEqual(store.extend(self.con, sid2, 12, DAY).isoformat(), '2027-10-23')
 
+    def test_inactive_phone_can_become_extra_phone(self):
+        with self.con:
+            parent = store.create_subscriber(self.con, main_phone='0521111111')
+            other = store.create_subscriber(self.con, main_phone='0529999999')  # active: stays its own
+            trial = store.create_subscriber(self.con, main_phone='0533333333', plan='trial', status='trial',
+                                            expires='2099-01-01')
+            old = store.create_subscriber(self.con, main_phone='0544444444', status='cancelled')
+            store.add_phone(self.con, old, '0545555555')
+            with self.assertRaises(ValueError):
+                store.add_phone(self.con, parent, '0529999999')
+            store.add_phone(self.con, parent, '0533333333')
+            store.add_phone(self.con, parent, '0545555555')
+        for p in ('0533333333', '0545555555'):
+            self.assertEqual(store.find_by_phone(self.con, p)['id'], parent)
+        t = self.con.execute('SELECT * FROM subscribers WHERE id=?', (trial,)).fetchone()
+        self.assertEqual((t['main_phone'], t['status']), (f'0533333333-old{trial}', 'cancelled'))
+        self.assertEqual(store.find_by_phone(self.con, '0544444444')['id'], old)  # its main phone is untouched
+        self.assertEqual(store.find_by_phone(self.con, '0529999999')['id'], other)
+
+    def test_renew_trials(self):
+        with self.con:
+            ids = {s: store.create_subscriber(self.con, main_phone=p, status=st, plan=pl, expires=ex)
+                   for s, p, st, pl, ex in (('cancelled', '0521000001', 'cancelled', 'monthly', '2026-01-01'),
+                                            ('disabled', '0521000002', 'disabled', 'annual', None),
+                                            ('expired', '0521000003', 'trial', 'trial', '2026-10-01'),
+                                            ('paid', '0521000004', 'active', 'monthly', '2099-01-01'),
+                                            ('free', '0521000005', 'active', 'free', None),
+                                            ('trial', '0521000006', 'trial', 'trial', '2099-01-01'))}
+            self.assertEqual(store.renewable_count(self.con, DAY), 3)
+            self.assertEqual(store.renew_trials(self.con, DAY), 3)
+        rows = {r['id']: r for r in self.con.execute('SELECT * FROM subscribers')}
+        for k in ('cancelled', 'disabled', 'expired'):
+            self.assertEqual((rows[ids[k]]['status'], rows[ids[k]]['expires']), ('trial', None))
+        self.assertEqual(rows[ids['paid']]['status'], 'active')
+        self.assertEqual(rows[ids['trial']]['expires'], '2099-01-01')
+        self.assertIn('ניסיון חדש לכל', admin.list_page(self.cfg, self.con, {}, DAY))
+
     def test_unique_phones(self):
         with self.con:
             a = store.create_subscriber(self.con, main_phone='0521111111')

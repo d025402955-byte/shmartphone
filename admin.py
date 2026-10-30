@@ -176,11 +176,15 @@ def list_page(cfg, con, q, day):
             f"<a class='btn{'' if i == pg else ' btn2'}' href='/admin?{base}&p={i}'>{i}</a>"
             for i in range(max(1, pg - 5), min(pages, pg + 5) + 1))
     summary = ' · '.join(f'{E(v)}: {counts.get(k, 0)}' for k, v in store.STATUSES.items())
+    renewable = store.renewable_count(con, day)
     return page('מנויים', f"""<div class="card"><form class="row" method="get" action="/admin">
 <label>חיפוש (שם / טלפון)<input name="q" value="{E(term)}"></label>
 <label>סטטוס<select name="status">{options(stat_opts, status)}</select></label>
 <button>חיפוש</button><a class="btn btn2" href="/admin/new">+ מנוי חדש</a></form>
-<p class="muted">{total} תוצאות · {summary}</p></div>
+<p class="muted">{total} תוצאות · {summary}</p>
+<form method="post" action="/admin/renew_trials" class="row"
+ onsubmit="return confirm('לתת ניסיון חדש ל-{renewable} מנויים? הימים יתחילו להיספר מהשיחה הבאה של כל אחד.')">{hidden(cfg)}
+<button class="btn2">ניסיון חדש לכל המבוטלים, המושבתים ופגי התוקף ({renewable})</button></form></div>
 <div class="wrap"><table><tr><th>#</th><th>שם</th><th>טלפון ראשי</th><th>נוספים</th><th>סטטוס</th><th>סוג</th>
 <th>תוקף</th><th>התראות ל</th></tr>{''.join(trs)}</table></div><p>{nav}</p>""")
 
@@ -376,6 +380,12 @@ def handle(cfg, con, method, path, query, headers, body, day):
         return redirect(f'/admin/sub/{sid}?m=created')
     if parts == ['activity']:
         return html_ok(activity_page(cfg, con))
+    if parts == ['renew_trials'] and method == 'POST':
+        with con:
+            n = store.renew_trials(con, day)
+        return html_ok(page('מנויים', f'<div class="card"><p>{n} מנויים קיבלו ניסיון חדש. הימים יתחילו להיספר '
+                                       f'מהשיחה הבאה של כל אחד.</p><a class="btn" href="/admin?status=trial">'
+                                       f'לרשימת המנויים</a></div>'))
     if len(parts) == 2 and parts[0] == 'msg' and parts[1].endswith('.mp3') and parts[1][:-4].isdigit():
         m = con.execute('SELECT * FROM messages WHERE id=?', (int(parts[1][:-4]),)).fetchone()
         if not m or not m['file_id']:
