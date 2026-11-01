@@ -668,6 +668,59 @@ class PaymentTests(Base):
     def sub(self):
         return store.find_by_phone(self.con, '0521234567')
 
+    def test_saved_card_charged_only_on_the_subscribers_key(self):
+        self.cfg['payments']['manual_keva'] = True
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='monthly', status='active',
+                                          expires='2026-10-22')  # ran out yesterday
+            store.set_keva(self.con, sid, '777')
+        # the sync freezes the new standing order and keeps the card's last digits
+        frozen = []
+        nedarim.freeze_new_kevas(self.cfg, self.con, details=lambda c, k: {'KevaId': k, 'KevaStatus': '1',
+                                                                           'KevaLastNum': '1234'},
+                                 freeze=lambda c, k: frozen.append(k), log=lambda *a, **k: None)
+        self.assertEqual(frozen, ['777'])
+        nedarim.freeze_new_kevas(self.cfg, self.con, details=None, freeze=None, log=None)  # nothing left to do
+        charges = []
+        orig = nedarim.charge_keva
+        nedarim.charge_keva = lambda c, k, amount, g, a: charges.append((k, amount, g)) or {
+            'Status': 'OK', 'TransactionId': '900', 'Confirmation': '55'}
+        try:
+            r = self.go()
+            self.assertEqual(r[0]['name'], 'psav')
+            self.assertIn('1 2 3 4', ' '.join(f['text'] for f in r[0]['files']))
+            self.assertEqual(charges, [])  # nothing charged before the key
+            r = self.go(psav='1')
+        finally:
+            nedarim.charge_keva = orig
+        self.assertEqual(charges, [('777', 8.9, f'שמרטפון {sid}')])
+        self.assertIn('החיוב בוצע', spoken(r[0]))
+        self.assertEqual((self.sub()['status'], self.sub()['expires']), ('active', '2026-11-23'))
+        # the sync later sees the same charge (joined to the order: minus id): not extended twice
+        rows = [{'TransactionId': '900', 'Amount': '8.9', 'Confirmation': '55', 'Groupe': f'שמרטפון {sid}',
+                 'KevaId': '-777', 'TransactionTime': '23/10/2026 12:00'}]
+        with self.con:
+            self.assertEqual(nedarim.apply_transactions(self.cfg, self.con, rows, log=lambda *a, **k: None)[1], 0)
+        self.assertEqual(self.sub()['expires'], '2026-11-23')
+
+    def test_saved_card_declined_falls_back_to_card_entry(self):
+        self.cfg['payments']['manual_keva'] = True
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='monthly', status='active',
+                                          expires='2026-10-22')
+            store.set_keva(self.con, sid, '777')
+            self.con.execute("UPDATE subscribers SET keva_frozen=1, card_last='1234' WHERE id=?", (sid,))
+        orig = nedarim.charge_keva
+        nedarim.charge_keva = lambda *a: {'Status': 'Error', 'Message': 'סירוב'}
+        try:
+            self.go()
+            r = self.go(psav='2')
+        finally:
+            nedarim.charge_keva = orig
+        self.assertEqual(r[0]['name'], 'pplan')
+        self.assertIn('לא עבר', ' '.join(f['text'] for f in r[0]['files']))
+        self.assertEqual(self.sub()['expires'], '2026-10-22')
+
     def test_expired_trial_offered_monthly_keva(self):
         with self.con:
             sid = store.create_subscriber(self.con, main_phone='0521234567', plan='trial', status='trial',

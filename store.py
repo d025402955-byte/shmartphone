@@ -124,7 +124,8 @@ MIGRATIONS = {
     'alerts': [('payload', 'TEXT'), ('not_before', 'REAL'), ('heard', 'REAL'), ('charged', 'INTEGER')],
     'noise_events': [('file_name', 'TEXT'), ('folder', 'TEXT'), ('file_url', 'TEXT')],
     'subscribers': [('billing', 'TEXT'), ('keva_id', 'TEXT'), ('balance', 'INTEGER'), ('alert_mode', 'TEXT'),
-                    ('alert_extra', 'TEXT'), ('alert_backup', 'TEXT'), ('trial_renewed', 'REAL')],
+                    ('alert_extra', 'TEXT'), ('alert_backup', 'TEXT'), ('trial_renewed', 'REAL'),
+                    ('keva_frozen', 'REAL'), ('card_last', 'TEXT')],
 }
 
 
@@ -275,6 +276,14 @@ def authorization(sub, day):
     return False, 'unknown'
 
 
+def set_keva(con, sid, keva_id):
+    """Remember the subscriber's standing order; a new one is not frozen yet (the next sync freezes it)."""
+    keva_id = str(keva_id).lstrip('-')  # a charge joined to the order shows its id with a minus
+    con.execute("UPDATE subscribers SET keva_frozen=NULL, card_last=NULL WHERE id=? AND COALESCE(keva_id,'')!=?",
+                (sid, keva_id))
+    con.execute('UPDATE subscribers SET keva_id=? WHERE id=?', (keva_id, sid))
+
+
 def record_payment(con, sid, *, source, months, amount, confirm=None, transaction_id=None, keva_id=None,
                    day=None):
     """Extend a subscription after a successful charge. Idempotent per transaction / confirmation."""
@@ -287,7 +296,7 @@ def record_payment(con, sid, *, source, months, amount, confirm=None, transactio
             con.execute('UPDATE payments SET transaction_id=COALESCE(transaction_id,?), keva_id=COALESCE(keva_id,?) '
                         'WHERE id=?', (transaction_id, keva_id, row['id']))
             if keva_id:
-                con.execute('UPDATE subscribers SET keva_id=? WHERE id=?', (keva_id, sid))
+                set_keva(con, sid, keva_id)
             return None
     if source == 'nedarim':
         # The phone result sometimes comes without CONFIRM_payment (seen with standing orders): the Nedarim
@@ -300,13 +309,14 @@ def record_payment(con, sid, *, source, months, amount, confirm=None, transactio
             con.execute('UPDATE payments SET confirm=?, transaction_id=?, keva_id=COALESCE(keva_id,?) WHERE id=?',
                         (confirm, transaction_id, keva_id, row['id']))
             if keva_id:
-                con.execute('UPDATE subscribers SET keva_id=? WHERE id=?', (keva_id, sid))
+                set_keva(con, sid, keva_id)
             audit(con, 'payment_linked', {'id': sid, 'payment': row['id'], 'transaction': transaction_id})
             return None
     new = extend(con, sid, months, day)
     plan = 'annual' if months >= 12 else 'monthly'
-    con.execute('UPDATE subscribers SET billing=?, amount=?, keva_id=COALESCE(?,keva_id) WHERE id=?',
-                ('nedarim', amount, keva_id, sid))
+    con.execute('UPDATE subscribers SET billing=?, amount=? WHERE id=?', ('nedarim', amount, sid))
+    if keva_id:
+        set_keva(con, sid, keva_id)
     con.execute('INSERT INTO payments(subscriber_id,source,plan,amount,confirm,transaction_id,keva_id,paid_until,created) '
                 'VALUES(?,?,?,?,?,?,?,?,?)',
                 (sid, source, plan, amount, confirm, transaction_id, keva_id, new.isoformat(), time.time()))

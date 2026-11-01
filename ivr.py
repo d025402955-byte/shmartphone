@@ -26,6 +26,7 @@ import re
 import secrets
 import time
 
+import nedarim
 import niqqud
 import store
 
@@ -209,6 +210,16 @@ TEXTS = {
     'pay_ok_monthly': 'תודה. המנוי החודשי הופעל, והוא בתוקף עד {date}. החיוב יתחדש מדי חודש.',
     'pay_ok_annual': 'תודה. המנוי השנתי הופעל, והוא בתוקף עד {date}.',
     'pay_next': 'להפעלת המערכת הקישו 1 בתפריט הראשי.',
+    # payments.manual_keva: the card is saved in a frozen standing order and charged only on the subscriber's '1'
+    'pay_menu_manual': 'למנוי חודשי ב-{monthly} שקלים לחודש הקישו 1. '
+                       'למנוי שנתי ב-{annual} שקלים, בתשלום אחד, הקישו 2.',
+    'pay_ok_monthly_manual': 'תודה. המנוי החודשי הופעל, והוא בתוקף עד {date}. הכרטיס נשמר לחידוש, '
+                             'ולא יבוצע שום חיוב בלי שתאשרו אותו בהקשה.',
+    'pay_saved': 'לחידוש מהכרטיס השמור שמסתיים בספרות {last}: לחודש ב-{monthly} שקלים הקישו 1, '
+                 'לשנה ב-{annual} שקלים הקישו 2. לתשלום בכרטיס אחר הקישו 3.',
+    'pay_saved_failed': 'החיוב בכרטיס השמור לא עבר. אפשר לשלם בכרטיס אחר.',
+    'pay_saved_unknown': 'לא התקבל אישור על החיוב. אם החיוב בוצע, המנוי יתעדכן בתוך כחצי שעה.',
+    'pay_ok_saved': 'תודה. החיוב בוצע, והמנוי בתוקף עד {date}.',
     'al_disconnected': 'שלום, כאן שְׁמַרְטַפוֹן. הקו בחדר התינוק התנתק.',
     'al_keys': 'לחיוג לטלפון שבחדר וחידוש הניטור, בעלות של כשקל מהפיקדון, הקישו 1. לסיום הקישו 0.',
     'rc_dialing': 'מתקשרים לטלפון שבחדר. נא להמתין על הקו.',
@@ -393,6 +404,7 @@ class Call:
             'recording': ('rec', self.on_record), 'his_nav': ('hnav', self.on_history_nav),
             'his_sub': ('hsub', self.on_history_sub), 'pay_plan': ('pplan', self.on_pay_plan),
             'paying': ('payment', self.on_payment), 'rc_pick': ('rcon', self.on_reconnect),
+            'pay_saved': ('psav', self.on_pay_saved),
             'al_menu': ('alm', self.on_alert_menu), 'rc_wait': ('rcw', self.on_reconnect_wait),
             'rc_done': ('rcd', self.on_reconnect_done), 'stop_pick': ('stp', self.on_stop_pick),
             'al_mode': ('alt', self.on_alert_mode), 'pay_dep': ('pdep', self.on_deposit_pick),
@@ -1475,13 +1487,27 @@ class Call:
     def money(x):
         return ('%.2f' % x).rstrip('0').rstrip('.')
 
-    def pay_menu(self, sub=None, prefix=None):
+    def manual_keva(self):
+        return bool((self.cfg.get('payments') or {}).get('manual_keva'))
+
+    def saved_card(self, sub):
+        """Last digits of the card in the subscriber's frozen standing order, or None."""
+        if self.manual_keva() and sub['keva_id'] and (sub['keva_frozen'] or 0) > 0 and sub['card_last']:
+            return sub['card_last']
+        return None
+
+    def pay_menu(self, sub=None, prefix=None, saved=True):
         if sub is None:
             sub, _, err = self.subscriber(auto_trial=True, allow_inactive=True)
             if err:
                 return err
         monthly, annual = self.prices()
         self.reset_tries()
+        last = self.saved_card(sub) if saved else None
+        if last:
+            self.save('pay_saved')
+            return [ask('psav', [prefix, t(self.cfg, 'pay_saved', last=' '.join(last), monthly=self.money(monthly),
+                                           annual=self.money(annual)), t(self.cfg, 'back_zero_short')], timeout=8)]
         self.save('pay_plan')
         if prefix is None and sub['status'] == 'active' and sub['plan'] in ('monthly', 'annual', 'free') and \
                 store.authorization(sub, self.day)[0]:
@@ -1489,8 +1515,8 @@ class Call:
             exp = sub['expires']
             until = f', בתוקף עד {say_date(exp)}' if exp and exp >= self.day.isoformat() else ''
             prefix = t(self.cfg, 'pay_active', until=until)
-        return [ask('pplan', [prefix, t(self.cfg, 'pay_menu', monthly=self.money(monthly),
-                                         annual=self.money(annual)),
+        return [ask('pplan', [prefix, t(self.cfg, 'pay_menu_manual' if self.manual_keva() else 'pay_menu',
+                                         monthly=self.money(monthly), annual=self.money(annual)),
                               t(self.cfg, 'pay_deposit', price=self.price_words()) if self.deposits() else None,
                               t(self.cfg, 'back_zero_short')],
                     timeout=8)]
@@ -1526,6 +1552,37 @@ class Call:
         self.data['pay'] = ['deposit', amount]
         self.save('paying')
         return [say(t(self.cfg, 'pay_card_intro')), cmd]
+
+    def on_pay_saved(self, key):
+        sub, _, err = self.subscriber(allow_inactive=True)
+        if err:
+            return err
+        if key == '3':
+            return self.pay_menu(sub, saved=False)
+        if key not in ('1', '2') or not self.saved_card(sub):
+            if key != '0' and self.retry():
+                return self.pay_menu(sub, t(self.cfg, 'bad_key'))
+            return hangup(self.cfg, t(self.cfg, 'goodbye'))
+        monthly, annual = self.prices()
+        months, amount = (1, monthly) if key == '1' else (12, annual)
+        p = self.cfg.get('payments') or {}
+        self.save(None)
+        try:  # the subscriber pressed the key: this is their approval of this one charge
+            r = nedarim.charge_keva(self.cfg, sub['keva_id'], amount, f"{p.get('category', 'שמרטפון')} {sub['id']}",
+                                    f"{sub['id']}-{self.call_id}-{key}")
+        except Exception as e:  # no answer: the charge may or may not have gone through; the sync will tell
+            store.audit(self.con, 'keva_charge_unknown', {'id': sub['id'], 'amount': amount, 'error': repr(e)[:150]})
+            return hangup(self.cfg, t(self.cfg, 'pay_saved_unknown'))
+        if r.get('Status') != 'OK':
+            store.audit(self.con, 'keva_charge_failed', {'id': sub['id'], 'amount': amount,
+                                                         'message': str(r.get('Message'))[:150]})
+            return self.pay_menu(sub, t(self.cfg, 'pay_saved_failed'), saved=False)
+        new = store.record_payment(self.con, sub['id'], source='keva', months=months, amount=amount,
+                                   confirm=str(r.get('Confirmation') or '') or None,
+                                   transaction_id=str(r.get('TransactionId') or r.get('ID') or '') or None, day=self.day)
+        sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
+        return hangup(self.cfg, t(self.cfg, 'pay_ok_saved', date=say_date(new.isoformat() if new else sub['expires'])),
+                      t(self.cfg, 'pay_next'))
 
     def on_pay_plan(self, key):
         sub, _, err = self.subscriber(auto_trial=True, allow_inactive=True)
@@ -1576,7 +1633,8 @@ class Call:
                                    confirm=confirm, day=self.day)
         sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
         until = say_date(new.isoformat() if new else sub['expires'])
-        return hangup(self.cfg, t(self.cfg, 'pay_ok_' + plan, date=until), t(self.cfg, 'pay_next'))
+        key = 'pay_ok_monthly_manual' if plan == 'monthly' and self.manual_keva() else 'pay_ok_' + plan
+        return hangup(self.cfg, t(self.cfg, key, date=until), t(self.cfg, 'pay_next'))
 
     def on_account_menu(self, key):
         sub, _, err = self.subscriber(allow_inactive=True)

@@ -40,7 +40,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _post(url, fields, hops=3):
+def _post(url, fields, hops=3, timeout=60):
     """POST form fields; follow redirects by re-POSTing (urllib would turn them into a GET and drop the body)."""
     data = urllib.parse.urlencode(fields).encode()
     opener = urllib.request.build_opener(_NoRedirect())
@@ -49,7 +49,7 @@ def _post(url, fields, hops=3):
                                      headers={'User-Agent': 'curl/8.5.0',
                                               'Content-Type': 'application/x-www-form-urlencoded'})
         try:
-            with opener.open(req, timeout=60) as r:
+            with opener.open(req, timeout=timeout) as r:
                 return r.read(50 * 1024 * 1024).decode('utf-8', 'replace'), url
         except urllib.error.HTTPError as e:
             if e.code in (301, 302, 303, 307, 308) and e.headers.get('Location'):
@@ -72,6 +72,57 @@ def fetch_history(cfg, last_id, debug=None):
     if isinstance(rows, dict):  # error envelope
         raise RuntimeError('nedarim: ' + str(rows.get('Message') or rows)[:200])
     return rows
+
+
+# ---------- standing orders kept frozen: the saved card is charged only when the subscriber presses 1 ----------
+
+def _call(cfg, action, timeout=60, **fields):
+    n = cfg['nedarim']
+    body, _ = _post(URL, {'Action': action, 'MosadId': str(n['mosad']).strip(), 'ApiPassword': n['api_password'],
+                          **{k: str(v) for k, v in fields.items()}}, timeout=timeout)
+    try:
+        return json.loads(body)
+    except ValueError:
+        return body.strip()  # some actions answer plain text: 'OK' or the error
+
+
+def keva_details(cfg, keva_id):
+    r = _call(cfg, 'GetKevaId', KevaId=keva_id)
+    if not isinstance(r, dict) or not r.get('KevaId'):
+        raise RuntimeError('nedarim GetKevaId: ' + str(r.get('Message') if isinstance(r, dict) else r)[:200])
+    return r
+
+
+def freeze_keva(cfg, keva_id):
+    r = _call(cfg, 'DisableKeva', KevaId=keva_id)
+    if r != 'OK':
+        raise RuntimeError('nedarim DisableKeva: ' + str(r)[:200])
+
+
+def charge_keva(cfg, keva_id, amount, groupe, ajax_id):
+    """One charge of the card saved in a (frozen) standing order. Returns the response; Status == 'OK' = charged."""
+    r = _call(cfg, 'TashlumBodedNew', timeout=25, KevaId=keva_id, Amount=amount, Currency=1, Tashlumim=1, Groupe=groupe,
+              JoinToKevaId='Join', AjaxId=ajax_id)
+    return r if isinstance(r, dict) else {'Status': 'Error', 'Message': str(r)[:200]}
+
+
+def freeze_new_kevas(cfg, con, details=keva_details, freeze=freeze_keva, log=print):
+    """Freeze every standing order we know of that is still active, and keep its card's last digits for the menu."""
+    rows = con.execute("SELECT id, keva_id FROM subscribers WHERE keva_id IS NOT NULL AND keva_id!='' "
+                       "AND keva_frozen IS NULL").fetchall()
+    for sid, keva in rows:
+        try:
+            d = details(cfg, keva)
+            if str(d.get('KevaStatus')) == '1':
+                freeze(cfg, keva)
+            frozen = str(d.get('KevaStatus')) in ('1', '2')
+            with con:
+                con.execute('UPDATE subscribers SET keva_frozen=?, card_last=? WHERE id=?',
+                            (time.time() if frozen else -1, str(d.get('KevaLastNum') or '')[-4:] or None, sid))
+                store.audit(con, 'keva_freeze', {'id': sid, 'keva': keva, 'was': d.get('KevaStatus')})
+            log('KEVA_FROZEN', sid, keva, 'was', d.get('KevaStatus'), flush=True)
+        except Exception as e:
+            log('KEVA_FREEZE_ERROR', sid, keva, repr(e)[:200], flush=True)
 
 
 def parse_date(s):
@@ -105,7 +156,7 @@ def match_subscriber(cfg, con, tx):
             row = con.execute('SELECT id FROM subscribers WHERE id=?', (int(m.group(1)),)).fetchone()
             if row:
                 return row['id']
-    keva = str(tx.get('KevaId') or '').strip()
+    keva = str(tx.get('KevaId') or '').strip().lstrip('-')  # '-' = a single charge joined to the order
     if keva:
         row = con.execute('SELECT id FROM subscribers WHERE keva_id=?', (keva,)).fetchone()
         if row:
@@ -168,6 +219,8 @@ def sync(cfg, db_path, fetch=fetch_history, log=print):
                 kv_set(con, 'nedarim_last_sync', int(time.time()))
             if len(rows) < PAGE:
                 break
+        if (cfg.get('payments') or {}).get('manual_keva'):
+            freeze_new_kevas(cfg, con, log=log)
     finally:
         con.close()
     return True

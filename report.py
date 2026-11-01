@@ -114,6 +114,10 @@ def build(con, now=None, day=None):
                              (since,)).fetchone()[0]
     if long_calls:
         problems.append(f'{long_calls} ניטורים נמשכו שעתיים ויותר (ייתכן שנחתכו)')
+    unfrozen = con.execute("SELECT COUNT(*) FROM subscribers WHERE keva_id IS NOT NULL AND keva_id!='' "
+                           "AND keva_frozen IS NULL").fetchone()[0]
+    if unfrozen:
+        problems.append(f'{unfrozen} הוראות קבע עוד לא הוקפאו (עלולות לחייב אוטומטית)')
     section('תקלות')
     out.extend(problems or ['לא נמצאו תקלות'])
 
