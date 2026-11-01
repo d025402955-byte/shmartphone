@@ -127,7 +127,6 @@ MIGRATIONS = {
                     ('alert_extra', 'TEXT'), ('alert_backup', 'TEXT'), ('trial_renewed', 'REAL')],
 }
 
-GRACE_DAYS = 5  # a paid subscription keeps working this many days after its paid-until date
 
 PLANS = {'monthly': 'חודשי', 'annual': 'שנתי', 'prepaid': 'פיקדון', 'free': 'חינם', 'trial': 'ניסיון'}
 STATUSES = {'active': 'פעיל', 'trial': 'תקופת ניסיון', 'disabled': 'מושבת', 'cancelled': 'מבוטל'}
@@ -255,7 +254,7 @@ def phone_owner(con, phone):
     return row['id'] if row else None
 
 
-def authorization(sub, day, enforce_active_expiry=False):
+def authorization(sub, day):
     """(allowed, reason). Active = allowed; trial = allowed until expiry; disabled = not."""
     if sub is None:
         return False, 'unknown'
@@ -271,11 +270,8 @@ def authorization(sub, day, enforce_active_expiry=False):
     if status == 'active':
         if sub['plan'] == 'free' or not exp:
             return True, ''
-        billed_here = 'billing' in sub.keys() and sub['billing'] == 'nedarim'
-        if not billed_here and not enforce_active_expiry:
-            return True, ''  # imported subscribers, still billed by the old system
-        limit = (day - datetime.timedelta(days=GRACE_DAYS)).isoformat()
-        return (exp >= limit), 'expired'
+        # nothing renews by itself (no standing orders): blocked the day after the paid-until date, until paid
+        return (exp >= day.isoformat()), 'expired'
     return False, 'unknown'
 
 
@@ -500,15 +496,14 @@ def add_phone(con, sid, phone, label='', max_phones=5):
     audit(con, 'add_phone', {'id': sid, 'phone': p})
 
 
-def trial_renewable(sub, day, enforce_active_expiry=False):
-    """A cancelled, disabled or expired subscriber gets one more trial when they call, once ever."""
+def trial_renewable(sub, day):
+    """A cancelled or disabled subscriber, or one whose trial ran out, gets one more trial when they call, once ever.
+    A paid plan that ran out is not: it stays blocked until paid again."""
     if sub['trial_renewed'] or '-old' in sub['main_phone']:
         return False
     if sub['status'] in ('cancelled', 'disabled'):
         return True
-    if sub['plan'] in ('free', 'prepaid'):  # a deposit that ran out is topped up, not renewed
-        return False
-    return not authorization(sub, day, enforce_active_expiry)[0]
+    return sub['status'] == 'trial' and not authorization(sub, day)[0]
 
 
 def renew_trial(con, sid, day, days):

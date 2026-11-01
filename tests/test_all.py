@@ -55,9 +55,10 @@ class StoreTests(Base):
 
     def test_authorization(self):
         mk = lambda st, plan, exp: {'status': st, 'plan': plan, 'expires': exp}
-        self.assertTrue(store.authorization(mk('active', 'monthly', '2020-01-01'), DAY)[0])
-        self.assertFalse(store.authorization(mk('active', 'monthly', '2020-01-01'), DAY, True)[0])
-        self.assertTrue(store.authorization(mk('active', 'monthly', '2026-10-20'), DAY, True)[0])  # grace
+        self.assertFalse(store.authorization(mk('active', 'monthly', '2020-01-01'), DAY)[0])
+        self.assertFalse(store.authorization(mk('active', 'monthly', '2026-10-22'), DAY)[0])  # no grace
+        self.assertTrue(store.authorization(mk('active', 'monthly', '2026-10-23'), DAY)[0])  # the last paid day
+        self.assertTrue(store.authorization(mk('active', 'free', '2020-01-01'), DAY)[0])
         self.assertTrue(store.authorization(mk('trial', 'trial', '2026-10-23'), DAY)[0])
         self.assertFalse(store.authorization(mk('trial', 'trial', '2026-10-22'), DAY)[0])
         self.assertFalse(store.authorization(mk('disabled', 'monthly', None), DAY)[0])
@@ -715,14 +716,15 @@ class PaymentTests(Base):
         self.go(payment='OK', CONFIRM_payment='9')
         s = self.sub()
         self.assertEqual((s['plan'], s['expires']), ('annual', '2027-10-23'))
-        # paid through the system: blocked only after paid-until + grace
-        later = datetime.date(2027, 10, 27)
-        self.assertTrue(store.authorization(s, later)[0])
-        self.assertFalse(store.authorization(s, later + datetime.timedelta(days=5))[0])
-        # imported (legacy) subscribers are not enforced
+        # blocked the day after paid-until
+        self.assertTrue(store.authorization(s, datetime.date(2027, 10, 23))[0])
+        self.assertFalse(store.authorization(s, datetime.date(2027, 10, 24))[0])
+        # imported subscribers too: the old system no longer charges anyone
         with self.con:
             lid = store.create_subscriber(self.con, main_phone='0539999999', expires='2020-01-01', legacy_id='5')
-        self.assertTrue(store.authorization(store.find_by_phone(self.con, '0539999999'), DAY)[0])
+        self.assertFalse(store.authorization(store.find_by_phone(self.con, '0539999999'), DAY)[0])
+        # and a paid plan that ran out gets no renewed trial: it pays to continue
+        self.assertFalse(store.trial_renewable(store.find_by_phone(self.con, '0539999999'), DAY))
 
     def test_account_menu_offers_payment_and_sync_ignores_others(self):
         with self.con:

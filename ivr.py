@@ -355,13 +355,13 @@ class Call:
             sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
             intro = t(self.cfg, 'welcome_trial', days=days)
         elif auto_trial and not allow_inactive and \
-                store.trial_renewable(sub, self.day, self.cfg.get('enforce_active_expiry', False)):
+                store.trial_renewable(sub, self.day):
             days = int(self.cfg.get('auto_trial_days', 0) or 7)  # one more trial, once, for a lapsed subscriber
             store.renew_trial(self.con, sub['id'], self.day, days)
             sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
             intro = t(self.cfg, 'welcome_trial', days=days)
         if not allow_inactive:
-            ok, reason = store.authorization(sub, self.day, self.cfg.get('enforce_active_expiry', False))
+            ok, reason = store.authorization(sub, self.day)
             if not ok:
                 key = reason if reason in TEXTS else 'disabled'
                 if self.payments_on():
@@ -904,7 +904,7 @@ class Call:
         rooms = []
         for sid in subs:
             sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sid,)).fetchone()
-            if not store.authorization(sub, self.day, self.cfg.get('enforce_active_expiry', False))[0]:
+            if not store.authorization(sub, self.day)[0]:
                 continue
             r = self.con.execute(
                 "SELECT room_id FROM sessions WHERE subscriber_id=? AND status='monitoring' AND ended IS NULL "
@@ -962,7 +962,7 @@ class Call:
         out = []
         for sid in subs:
             sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sid,)).fetchone()
-            if not sub or not store.authorization(sub, self.day, self.cfg.get('enforce_active_expiry', False))[0]:
+            if not sub or not store.authorization(sub, self.day)[0]:
                 continue
             live = self.con.execute("SELECT 1 FROM sessions WHERE subscriber_id=? AND status='monitoring' "
                                     "AND ended IS NULL AND started>?", (sid, self.now - 12 * 3600)).fetchone()
@@ -1109,7 +1109,7 @@ class Call:
             return hangup(self.cfg, t(self.cfg, 'goodbye'))
         sid, prev_call, room_phone = self.data.get('al', [None, None, None])
         sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sid,)).fetchone()
-        if not sub or not store.authorization(sub, self.day, self.cfg.get('enforce_active_expiry', False))[0]:
+        if not sub or not store.authorization(sub, self.day)[0]:
             return hangup(self.cfg, t(self.cfg, 'disabled'))
         import core
         ok, why = core.queue_reconnect(self.cfg, self.con, sid, room_phone, prev_call, self.phone, self.now)
@@ -1167,7 +1167,7 @@ class Call:
             pd = json.loads(prev['data']) if prev and prev['data'] else {}
             alert_phone, ax, ab = (prev['alert_phone'] if prev else None), pd.get('ax'), pd.get('ab')
         if not sub or not alert_phone or \
-                not store.authorization(sub, self.day, self.cfg.get('enforce_active_expiry', False))[0]:
+                not store.authorization(sub, self.day)[0]:
             return [{'type': 'hangup'}]
         self.con.execute("UPDATE alerts SET state='answered' WHERE id=?", (row['id'],))
         self.bind(sub)
@@ -1185,7 +1185,7 @@ class Call:
             if not any(o['id'] == r['id'] for o in out):
                 out.append(r)
         return [s for s in out
-                if store.authorization(s, self.day, self.cfg.get('enforce_active_expiry', False))[0]]
+                if store.authorization(s, self.day)[0]]
 
     def history(self):
         subs = [s for s in self.allowed_subs()
@@ -1484,7 +1484,7 @@ class Call:
         self.reset_tries()
         self.save('pay_plan')
         if prefix is None and sub['status'] == 'active' and sub['plan'] in ('monthly', 'annual', 'free') and \
-                store.authorization(sub, self.day, self.cfg.get('enforce_active_expiry', False))[0]:
+                store.authorization(sub, self.day)[0]:
             # e.g. a subscriber imported from the old system who thinks they must join again
             exp = sub['expires']
             until = f', בתוקף עד {say_date(exp)}' if exp and exp >= self.day.isoformat() else ''
@@ -1597,7 +1597,7 @@ class Call:
             self.data['verified'] = ver[:20]
             return self.verified_one(0)
         if key == '3':
-            ok, _ = store.authorization(sub, self.day, self.cfg.get('enforce_active_expiry', False))
+            ok, _ = store.authorization(sub, self.day)
             return self.phones() if ok else self.account(t(self.cfg, 'disabled'))
         if key == '5' and self.payments_on():
             return self.pay_menu(sub)

@@ -107,7 +107,7 @@ def build_config():
     cfg.update({
         'db_path': DB_PATH, 'secret_key': secrets.token_hex(32), 'timezone': 'Asia/Jerusalem',
         'auto_trial_days': 7, 'trial_days': 7, 'max_extra_phones': 5, 'alert_cooldown': 120,
-        'alert_on_disconnect': True, 'enforce_active_expiry': False, 'call_length': 25, 'dial_retries': 1,
+        'alert_on_disconnect': True, 'call_length': 25, 'dial_retries': 1,
         'campaign_url': 'https://api.tlivr.com/campaignApi.php',
     })
     if not cfg['api_key']:
