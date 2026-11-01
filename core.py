@@ -356,7 +356,62 @@ def copy_message_file(cfg, msg_row, api=files_api):
     return '' if (r or {}).get('status') == 'OK' else 'copy: ' + json.dumps(r, ensure_ascii=False)[:150]
 
 
-def send_email(cfg, msg_row, audio):
+def _runpod(t, method, path, body=None):
+    req = urllib.request.Request(f"https://api.runpod.ai/v2/{t['endpoint_id']}/{path}",
+                                 data=json.dumps(body).encode() if body is not None else None, method=method,
+                                 headers={'Authorization': 'Bearer ' + t['api_key'], 'Content-Type': 'application/json',
+                                          'User-Agent': 'curl/8.5.0'})
+    with urllib.request.build_opener(_NoRedirect()).open(req, timeout=60) as resp:
+        return json.loads(resp.read(5 * 1024 * 1024) or b'{}')
+
+
+def transcript_text(output):
+    """Join the segment texts of an ivrit.ai RunPod job output (nested lists of progress/segments events)."""
+    parts = []
+
+    def walk(x):
+        if isinstance(x, list):
+            for v in x:
+                walk(v)
+        elif isinstance(x, dict):
+            if x.get('type') == 'segments':
+                parts.extend((s.get('text') or '').strip() for s in x.get('data') or [])
+            else:
+                for v in x.values():
+                    walk(v)
+    walk(output)
+    return ' '.join(p for p in parts if p)
+
+
+def transcribe(cfg, audio, api=_runpod, sleep=time.sleep, clock=time.time):
+    """Hebrew speech-to-text of a message on the ivrit.ai RunPod endpoint (cfg['transcribe']).
+    Returns the text, '' when it is off or there is no audio. Raises on failure or after the time limit
+    (the job is cancelled then, so it stops costing)."""
+    t = cfg.get('transcribe') or {}
+    if not audio or not t.get('api_key') or not t.get('endpoint_id'):
+        return ''
+    import base64
+    job = api(t, 'POST', 'run', {'input': {
+        'engine': 'faster-whisper', 'model': t.get('model') or 'ivrit-ai/whisper-large-v3-turbo-ct2', 'streaming': False,
+        'transcribe_args': {'blob': base64.b64encode(audio).decode(), 'language': 'he'}}})
+    deadline = clock() + int(t.get('timeout', 240))
+    while True:
+        status = job.get('status')
+        if status == 'COMPLETED':
+            return transcript_text(job.get('output'))
+        if status in ('FAILED', 'CANCELLED', 'TIMED_OUT'):
+            raise RuntimeError(f"transcribe {status}: {str(job.get('error') or '')[:150]}")
+        if clock() >= deadline:
+            try:
+                api(t, 'POST', 'cancel/' + job['id'])
+            except Exception:
+                pass
+            raise RuntimeError('transcribe: time limit')
+        sleep(3)
+        job = {**api(t, 'GET', 'status/' + job['id']), 'id': job['id']}
+
+
+def send_email(cfg, msg_row, audio, transcript=''):
     from email.message import EmailMessage
     s = cfg['smtp']
     m = EmailMessage()
@@ -368,6 +423,7 @@ def send_email(cfg, msg_row, audio):
                   f"מנוי: {('#' + str(sub)) if sub else 'לא רשום'}\n"
                   f"אורך: {int(msg_row['duration'] or 0)} שניות\n"
                   f"זמן: {time.strftime('%d/%m/%Y %H:%M', time.localtime(msg_row['created']))}\n"
+                  + (f"\nתמלול (אוטומטי, ייתכנו טעויות):\n{transcript}\n" if transcript else '')
                   + ('' if audio else "\nאין הקלטה: המתקשר ניתק לפני שסיים את ההקלטה בסולמית, "
                                       "וטכנוליין לא שומרים הקלטה שלא הסתיימה.\n"))
     if audio:
@@ -399,7 +455,8 @@ def _smtp_send(s, m):
         srv.send_message(m)
 
 
-def process_message(cfg, db_path, fetch=fetch_recording, mail=send_email, log=print, copy=copy_message_file):
+def process_message(cfg, db_path, fetch=fetch_recording, mail=send_email, log=print, copy=copy_message_file,
+                    stt=transcribe):
     if not cfg.get('smtp'):
         return False
     con = store.connect(db_path)
@@ -415,8 +472,12 @@ def process_message(cfg, db_path, fetch=fetch_recording, mail=send_email, log=pr
         con.close()
     try:
         audio = fetch(cfg, row['file_id']) if row['file_id'] else b''
-        mail(cfg, row, audio)
-        state, result = 'emailed', ''
+        try:  # a transcript is a bonus: the email goes out without it rather than wait or fail
+            text, note = stt(cfg, audio), ''
+        except Exception as e:
+            text, note = '', 'stt: ' + repr(e)[:150]
+        mail(cfg, row, audio, text)
+        state, result = 'emailed', note
     except Exception as e:
         state, result = 'failed', repr(e)[:300]
     try:

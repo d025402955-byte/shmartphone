@@ -404,6 +404,29 @@ def set_reconnect():
     run('systemctl', 'restart', SERVICE)
 
 
+def set_transcribe():
+    """install.py transcribe ENDPOINT_ID  (RunPod endpoint of ivrit-ai/runpod-serverless; asks for the API key; 0 = off)"""
+    endpoint = (sys.argv[2] if len(sys.argv) > 2 else '').strip()
+    with open(NEW_CFG, encoding='utf-8') as f:
+        cfg = json.load(f)
+    if not endpoint:
+        print('usage: install.py transcribe RUNPOD_ENDPOINT_ID   (0 = off)')
+        return
+    if endpoint == '0':
+        cfg.pop('transcribe', None)
+        print('message transcription: off')
+    else:
+        key = getpass.getpass('RunPod API key (not shown): ').strip()
+        if not key:
+            print('no key: nothing saved')
+            return
+        cfg['transcribe'] = {'endpoint_id': endpoint, 'api_key': key, 'model': 'ivrit-ai/whisper-large-v3-turbo-ct2'}
+        print('message transcription: RunPod endpoint', endpoint)
+    write_config(cfg, service_user())
+    run('systemctl', 'restart', SERVICE)
+    print('saved; service restarted')
+
+
 def rollback():
     if os.path.exists(DROPIN):
         os.remove(DROPIN)
@@ -417,4 +440,4 @@ if __name__ == '__main__':
         sys.exit('run as root')
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'install'
     {'install': install, 'password': set_password, 'rollback': rollback, 'smtp': set_smtp, 'voice': set_voice, 'alerts': set_alerts, 'price': set_price, 'recharge': set_recharge, 'msgext': set_message_extension, 'vmpin': set_voicemail_pin, 'set': set_value, 'payments': set_payments, 'reconnect': set_reconnect,
-     'status': lambda: print(run('systemctl', 'status', SERVICE, '--no-pager', check=False))}[cmd]()
+     'transcribe': set_transcribe, 'status': lambda: print(run('systemctl', 'status', SERVICE, '--no-pager', check=False))}[cmd]()

@@ -1184,13 +1184,61 @@ class EmailTests(Base):
             self.con.execute("INSERT INTO messages(phone,file_id,duration,created,state) VALUES('0521',?,3,?,'pending')",
                              ('9', time.time()))
         sent = []
-        ok = core.process_message(self.cfg, self.db, fetch=lambda c, f: b'MP3', mail=lambda c, r, a: sent.append(a),
-                                  log=lambda *a, **k: None)
+        ok = core.process_message(self.cfg, self.db, fetch=lambda c, f: b'MP3',
+                                  mail=lambda c, r, a, t: sent.append((a, t)), log=lambda *a, **k: None,
+                                  stt=lambda c, a: 'שלום, רציתי לשאול')
         self.assertTrue(ok)
-        self.assertEqual(sent, [b'MP3'])
+        self.assertEqual(sent, [(b'MP3', 'שלום, רציתי לשאול')])
         self.assertEqual(self.con.execute('SELECT state FROM messages').fetchone()[0], 'emailed')
         del self.cfg['smtp']
         self.assertFalse(core.process_message(self.cfg, self.db))
+
+    def test_message_emailed_without_transcript_when_stt_fails(self):
+        self.cfg['smtp'] = {'host': 'h', 'user': 'u', 'password': 'p', 'to': 't@x'}
+        with self.con:
+            self.con.execute("INSERT INTO messages(phone,file_id,duration,created,state) VALUES('0521',?,3,?,'pending')",
+                             ('9', time.time()))
+        sent = []
+
+        def stt(c, a):
+            raise RuntimeError('transcribe: time limit')
+        core.process_message(self.cfg, self.db, fetch=lambda c, f: b'MP3', mail=lambda c, r, a, t: sent.append(t),
+                             log=lambda *a, **k: None, stt=stt)
+        self.assertEqual(sent, [''])
+        state, result = self.con.execute('SELECT state, result FROM messages').fetchone()
+        self.assertEqual(state, 'emailed')
+        self.assertIn('time limit', result)
+
+    def test_transcribe_runpod(self):
+        out = [{'result': [[{'type': 'progress', 'data': {}},
+                            {'type': 'segments', 'data': [{'text': ' שלום, '}, {'text': 'רציתי לשאול '}]}],
+                           [{'type': 'segments', 'data': [{'text': 'על המנוי.'}]}]]}]
+        self.assertEqual(core.transcript_text(out), 'שלום, רציתי לשאול על המנוי.')
+        self.assertEqual(core.transcribe(self.cfg, b'MP3'), '')  # not configured: off
+        self.cfg['transcribe'] = {'endpoint_id': 'ep', 'api_key': 'k', 'timeout': 30}
+        self.assertEqual(core.transcribe(self.cfg, b''), '')  # no audio: nothing to send
+        calls, now = [], [0]
+        replies = iter([{'id': 'j1', 'status': 'IN_QUEUE'}, {'status': 'IN_PROGRESS'},
+                        {'status': 'COMPLETED', 'output': out}])
+
+        def api(t, method, path, body=None):
+            calls.append((method, path, body))
+            return next(replies)
+        text = core.transcribe(self.cfg, b'MP3', api=api, sleep=lambda s: None, clock=lambda: now[0])
+        self.assertEqual(text, 'שלום, רציתי לשאול על המנוי.')
+        self.assertEqual([c[:2] for c in calls], [('POST', 'run'), ('GET', 'status/j1'), ('GET', 'status/j1')])
+        args = calls[0][2]['input']['transcribe_args']
+        self.assertEqual((args['blob'], args['language']), ('TVAz', 'he'))
+        # too slow: the job is cancelled (stops costing) and the caller gets an error
+        calls.clear()
+
+        def slow(t, method, path, body=None):
+            calls.append((method, path))
+            now[0] += 20
+            return {'id': 'j2', 'status': 'IN_QUEUE'}
+        with self.assertRaises(RuntimeError):
+            core.transcribe(self.cfg, b'MP3', api=slow, sleep=lambda s: None, clock=lambda: now[0])
+        self.assertEqual(calls[-1], ('POST', 'cancel/j2'))
 
     def test_message_copied_to_voicemail_box(self):
         self.cfg.update({'messages_folder': '12116', 'messages_copy_folder': '12101'})

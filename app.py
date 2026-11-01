@@ -200,8 +200,6 @@ def alert_worker(cfg, wake):
         try:
             while core.process_one(cfg, cfg['db_path']):
                 pass
-            while core.process_message(cfg, cfg['db_path']):
-                pass
         except Exception as e:
             print('WORKER_ERROR', repr(e)[:300], flush=True)
         if time.time() - last_sync > int(cfg.get('nedarim_sync_seconds', 1200)):
@@ -229,6 +227,18 @@ def alert_worker(cfg, wake):
         wake.clear()
 
 
+def message_worker(cfg):
+    """Customer-service messages: download, transcribe (up to a few minutes) and email.
+    A thread of its own, so a slow transcription never holds back a noise alert."""
+    while True:
+        try:
+            while core.process_message(cfg, cfg['db_path']):
+                pass
+        except Exception as e:
+            print('MESSAGE_WORKER_ERROR', repr(e)[:300], flush=True)
+        time.sleep(5)
+
+
 def main():
     cfg = load_config()
     store.init(cfg['db_path'])
@@ -240,6 +250,7 @@ def main():
     con.close()
     handler, wake = make_handler(cfg)
     threading.Thread(target=alert_worker, args=(cfg, wake), daemon=True).start()
+    threading.Thread(target=message_worker, args=(cfg,), daemon=True).start()
     host, port = cfg.get('listen_host', '127.0.0.1'), int(cfg.get('listen_port', 8088))
     srv = ThreadingHTTPServer((host, port), handler)
     srv.daemon_threads = True
