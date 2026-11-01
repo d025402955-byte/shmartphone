@@ -105,6 +105,11 @@ class StoreTests(Base):
         s = self.con.execute('SELECT * FROM subscribers WHERE id=?', (ids['cancelled'],)).fetchone()
         self.assertEqual((s['status'], s['expires']), ('trial', '2026-10-30'))
         self.assertFalse(store.trial_renewable(s, datetime.date(2026, 11, 5)))  # once only
+        with self.con:  # a cancelled subscriber paid until later keeps that date
+            store.update_subscriber(self.con, ids['disabled'], expires='2026-12-27')
+            store.renew_trial(self.con, ids['disabled'], DAY, 7)
+        s = self.con.execute('SELECT * FROM subscribers WHERE id=?', (ids['disabled'],)).fetchone()
+        self.assertEqual(s['expires'], '2026-12-27')
 
     def test_unique_phones(self):
         with self.con:

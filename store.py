@@ -512,8 +512,11 @@ def trial_renewable(sub, day, enforce_active_expiry=False):
 
 
 def renew_trial(con, sid, day, days):
-    con.execute("UPDATE subscribers SET status='trial', plan='trial', expires=?, next_charge=NULL, trial_renewed=?, "
-                "updated=? WHERE id=?", ((day + datetime.timedelta(days=days)).isoformat(), time.time(), time.time(), sid))
+    """Start the one renewed trial. A later paid-until date is kept: the trial never shortens it."""
+    exp = (day + datetime.timedelta(days=days)).isoformat()
+    con.execute("UPDATE subscribers SET status='trial', plan='trial', next_charge=NULL, trial_renewed=?, updated=?, "
+                "expires=CASE WHEN expires IS NOT NULL AND expires>? THEN expires ELSE ? END WHERE id=?",
+                (time.time(), time.time(), exp, exp, sid))
     audit(con, 'trial_renew', {'id': sid, 'days': days})
 
 
