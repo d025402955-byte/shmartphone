@@ -753,6 +753,33 @@ class PaymentTests(Base):
         self.assertEqual(charges, [])
         self.assertIsNone(self.con.execute("SELECT 1 FROM alerts WHERE kind='renew_notice'").fetchone())
 
+    def test_standing_order_gets_name_and_phone_once(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', name='', plan='monthly')
+            store.set_keva(self.con, sid, '777')
+        calls = []
+        upd = lambda c, k, name, phone, g: calls.append((k, name, phone, g))
+        nedarim.name_kevas(self.cfg, self.con, update=upd, log=lambda *a, **k: None)
+        nedarim.name_kevas(self.cfg, self.con, update=upd, log=lambda *a, **k: None)
+        self.assertEqual(calls, [('777', f'מנוי שמרטפון {sid}', '0521234567', f'שמרטפון {sid}')])
+        with self.con:  # a new standing order is named again
+            store.set_keva(self.con, sid, '888')
+        nedarim.name_kevas(self.cfg, self.con, update=upd, log=lambda *a, **k: None)
+        self.assertEqual(calls[-1][0], '888')
+
+    def test_activity_lists_card_transactions(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='monthly')
+            store.record_payment(self.con, sid, source='phone', months=1, amount=8.9, confirm='55',
+                                 transaction_id='900', day=DAY)
+            store.audit(self.con, 'renew_failed', {'id': sid, 'amount': 82, 'status': 'Error', 'message': 'סירוב'})
+        out = admin.activity_page(self.cfg, self.con)
+        self.assertIn('עסקאות אשראי', out)
+        self.assertIn('8.9 ₪', out)
+        self.assertIn('900', out)
+        self.assertIn('חידוש אוטומטי', out)
+        self.assertIn('סירוב', out)
+
     def test_saved_card_declined_falls_back_to_card_entry(self):
         self.cfg['payments']['manual_keva'] = True
         with self.con:

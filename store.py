@@ -125,7 +125,8 @@ MIGRATIONS = {
     'noise_events': [('file_name', 'TEXT'), ('folder', 'TEXT'), ('file_url', 'TEXT')],
     'subscribers': [('billing', 'TEXT'), ('keva_id', 'TEXT'), ('balance', 'INTEGER'), ('alert_mode', 'TEXT'),
                     ('alert_extra', 'TEXT'), ('alert_backup', 'TEXT'), ('trial_renewed', 'REAL'),
-                    ('keva_frozen', 'REAL'), ('card_last', 'TEXT'), ('renew_off', 'REAL')],
+                    ('keva_frozen', 'REAL'), ('card_last', 'TEXT'), ('renew_off', 'REAL'),
+                    ('keva_named', 'TEXT')],
 }
 
 

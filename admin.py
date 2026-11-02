@@ -369,6 +369,39 @@ def sub_page(cfg, con, sid, msg=None, err=None):
                 msg, err)
 
 
+PAY_SOURCES = {'phone': 'אשראי בטלפון', 'keva': 'כרטיס שמור', 'nedarim': 'נדרים פלוס', 'admin': 'ידני'}
+PAY_FAILS = {'payment_failed': 'אשראי בטלפון', 'keva_charge_failed': 'כרטיס שמור', 'keva_charge_unknown': 'כרטיס שמור',
+             'renew_failed': 'חידוש אוטומטי'}
+
+
+def payments_card(con):
+    """Credit card transactions: successful payments, and attempts that failed."""
+    rows = [(p['created'], p['subscriber_id'], p['main_phone'], PAY_SOURCES.get(p['source'], p['source']),
+             store.PLANS.get(p['plan'], 'פיקדון' if p['plan'] == 'deposit' else p['plan'] or ''), p['amount'],
+             'בוצע', p['confirm'] or '', p['transaction_id'] or '', p['keva_id'] or '')
+            for p in con.execute('SELECT p.*, s.main_phone FROM payments p LEFT JOIN subscribers s '
+                                 'ON s.id=p.subscriber_id ORDER BY p.id DESC LIMIT 200')]
+    for a in con.execute(f"SELECT * FROM audit WHERE action IN ({','.join('?' * len(PAY_FAILS))}) "
+                         'ORDER BY id DESC LIMIT 100', list(PAY_FAILS)):
+        d = json.loads(a['details'] or '{}')
+        sub = con.execute('SELECT main_phone FROM subscribers WHERE id=?', (d.get('id'),)).fetchone()
+        rows.append((a['ts'], d.get('id'), sub['main_phone'] if sub else '', PAY_FAILS[a['action']],
+                     store.PLANS.get(d.get('plan'), d.get('plan') or ''), d.get('amount'),
+                     'לא ידוע' if a['action'] == 'keva_charge_unknown' else 'נכשל',
+                     str(d.get('message') or d.get('status') or d.get('error') or '')[:60], '', ''))
+    rows.sort(key=lambda r: r[0] or 0, reverse=True)
+    trs = ''.join(
+        f"<tr><td>{fmt_ts(ts)}</td><td>{('<a href=/admin/sub/' + str(sid) + '>#' + str(sid) + '</a>') if sid else ''}</td>"
+        f"<td>{E(phone or '')}</td><td>{E(src)}</td><td>{E(plan)}</td>"
+        f"<td>{'' if amount is None else E(('%.2f' % float(amount)).rstrip('0').rstrip('.')) + ' ₪'}</td>"
+        f"<td class='{'' if st == 'בוצע' else 'exp'}'>{E(st)}</td><td>{E(conf)}</td><td>{E(tx)}</td><td>{E(keva)}</td></tr>"
+        for ts, sid, phone, src, plan, amount, st, conf, tx, keva in rows[:200])
+    total = sum(float(r[5] or 0) for r in rows if r[6] == 'בוצע')
+    return f"""<div class="card"><h3>עסקאות אשראי</h3><p class="muted">סה"כ שבוצעו: {E(('%.2f' % total).rstrip('0').rstrip('.'))} ₪</p>
+<div class="wrap"><table><tr><th>זמן</th><th>מנוי</th><th>טלפון</th><th>דרך</th><th>סוג</th><th>סכום</th><th>מצב</th>
+<th>אישור / סיבה</th><th>עסקה</th><th>הו"ק</th></tr>{trs}</table></div></div>"""
+
+
 def activity_page(cfg, con):
     live = con.execute("SELECT x.*, s.name, s.main_phone FROM sessions x LEFT JOIN subscribers s ON s.id=x.subscriber_id "
                        "WHERE x.ended IS NULL AND (x.mon_start IS NOT NULL OR x.started>?) "
@@ -387,7 +420,7 @@ def activity_page(cfg, con):
     al = ''.join(f"<tr><td>{fmt_ts(r['created'])}</td><td><a href='/admin/sub/{r['subscriber_id']}'>{E(r['main_phone'] or '')}</a></td>"
                  f"<td>{E(r['kind'])}</td><td>{E(r['alert_phone'] or '')}</td><td>{E(r['state'])}</td>"
                  f"<td class='muted'>{E((r['result'] or '')[:120])}</td></tr>" for r in alerts)
-    return page('פעילות', f"""<div class="card"><h3>ניטורים פתוחים</h3><div class="wrap"><table><tr><th>מנוי</th><th>מטלפון</th>
+    return page('פעילות', f"""{payments_card(con)}<div class="card"><h3>ניטורים פתוחים</h3><div class="wrap"><table><tr><th>מנוי</th><th>מטלפון</th>
 <th>התחלה</th><th>התראות ל</th><th>מצב</th></tr>{lv}</table></div></div>
 <div class="card"><h3>הודעות לשירות הלקוחות</h3><div class="wrap"><table><tr><th>זמן</th><th>מטלפון</th><th>מנוי</th>
 <th>אורך</th><th>מצב</th><th></th></tr>{ms}</table></div></div>

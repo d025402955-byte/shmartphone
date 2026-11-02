@@ -125,6 +125,30 @@ def freeze_new_kevas(cfg, con, details=keva_details, freeze=freeze_keva, log=pri
             log('KEVA_FREEZE_ERROR', sid, keva, repr(e)[:200], flush=True)
 
 
+def name_keva(cfg, keva_id, name, phone, groupe):
+    """Put the subscriber's name and phone on the standing order and its charges, so it can be found in Nedarim
+    (the phone payment module sends only the card and the category)."""
+    r = _call(cfg, 'UpdateKevaNew', KevaId=keva_id, ClientName=name, Phone=phone, Groupe=groupe, UpdateHistory='true')
+    if not isinstance(r, dict) or r.get('Result') != 'OK':
+        raise RuntimeError('nedarim UpdateKevaNew: ' + str(r.get('Message') if isinstance(r, dict) else r)[:200])
+
+
+def name_kevas(cfg, con, update=name_keva, log=print):
+    rows = con.execute("SELECT * FROM subscribers WHERE keva_id IS NOT NULL AND keva_id!='' "
+                       "AND COALESCE(keva_named,'')!=keva_id").fetchall()
+    category = (cfg.get('payments') or {}).get('category', 'שמרטפון')
+    for sub in rows:
+        name = (sub['name'] or '').strip() or f"מנוי שמרטפון {sub['id']}"
+        try:
+            update(cfg, sub['keva_id'], name.replace('<', '').replace('>', '')[:100], sub['main_phone'],
+                   f"{category} {sub['id']}")
+            with con:
+                con.execute('UPDATE subscribers SET keva_named=? WHERE id=?', (sub['keva_id'], sub['id']))
+            log('KEVA_NAMED', sub['id'], sub['keva_id'], flush=True)
+        except Exception as e:
+            log('KEVA_NAME_ERROR', sub['id'], sub['keva_id'], repr(e)[:200], flush=True)
+
+
 def parse_date(s):
     m = re.match(r'(\d{1,2})/(\d{1,2})/(\d{4})', str(s or ''))
     if not m:
@@ -221,6 +245,7 @@ def sync(cfg, db_path, fetch=fetch_history, log=print):
                 break
         if (cfg.get('payments') or {}).get('manual_keva'):
             freeze_new_kevas(cfg, con, log=log)
+            name_kevas(cfg, con, log=log)
     finally:
         con.close()
     return True
