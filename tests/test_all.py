@@ -703,6 +703,56 @@ class PaymentTests(Base):
             self.assertEqual(nedarim.apply_transactions(self.cfg, self.con, rows, log=lambda *a, **k: None)[1], 0)
         self.assertEqual(self.sub()['expires'], '2026-11-23')
 
+    def test_auto_renewal_reminds_the_day_before_then_charges_once(self):
+        import renew
+        self.cfg['payments'].update({'manual_keva': True, 'auto_renew': True})
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='monthly', status='active',
+                                          expires='2026-11-10')
+            store.set_keva(self.con, sid, '777')
+            self.con.execute("UPDATE subscribers SET keva_frozen=1, card_last='1234' WHERE id=?", (sid,))
+        charges = []
+        charge = lambda c, k, amount, g, a: charges.append((k, amount, a)) or {
+            'Status': 'OK', 'TransactionId': '901', 'Confirmation': '56'}
+        at = lambda d, h: time.mktime((2026, 11, d, h, 0, 0, 0, 0, -1))
+        quiet = lambda *a, **k: None
+        renew.run(self.cfg, self.db, charge, now=at(8, 12), log=quiet)  # two days before: nothing
+        self.assertIsNone(self.con.execute("SELECT 1 FROM alerts WHERE kind='renew_notice'").fetchone())
+        renew.run(self.cfg, self.db, charge, now=at(9, 8), log=quiet)  # the day before, too early in the morning
+        self.assertIsNone(self.con.execute("SELECT 1 FROM alerts WHERE kind='renew_notice'").fetchone())
+        renew.run(self.cfg, self.db, charge, now=at(9, 12), log=quiet)  # the day before: the reminder call
+        a = self.con.execute("SELECT * FROM alerts WHERE kind='renew_notice'").fetchone()
+        self.assertEqual(a['alert_phone'], '0521234567')
+        self.assertIn('8.9 שקלים', a['payload'])
+        self.assertIn('1 2 3 4', a['payload'])
+        self.assertEqual(charges, [])
+        renew.run(self.cfg, self.db, charge, now=at(10, 6), log=quiet)  # renewal day, before the hour
+        self.assertEqual(charges, [])
+        renew.run(self.cfg, self.db, charge, now=at(10, 12), log=quiet)
+        self.assertEqual(charges, [('777', 8.9, f'auto-{sid}-2026-11-10')])
+        self.assertEqual(self.sub()['expires'], '2026-12-10')
+        renew.run(self.cfg, self.db, charge, now=at(10, 13), log=quiet)  # never twice
+        self.assertEqual(len(charges), 1)
+
+    def test_auto_renewal_cancelled_by_phone(self):
+        import renew
+        self.cfg['payments'].update({'manual_keva': True, 'auto_renew': True})
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='annual', status='active',
+                                          expires='2026-11-10')
+            store.set_keva(self.con, sid, '777')
+            self.con.execute("UPDATE subscribers SET keva_frozen=1, card_last='1234' WHERE id=?", (sid,))
+        r = self.go('account')
+        self.assertIn('לביטול החידוש האוטומטי', ' '.join(f.get('text', '') for f in r[0]['files']))
+        r = self.go('account', acm='8')
+        self.assertIn('החידוש האוטומטי בוטל', ' '.join(f.get('text', '') for f in r[0]['files']))
+        charges = []
+        for d, h in ((9, 12), (10, 12)):
+            renew.run(self.cfg, self.db, lambda *a: charges.append(a) or {'Status': 'OK'},
+                      now=time.mktime((2026, 11, d, h, 0, 0, 0, 0, -1)), log=lambda *a, **k: None)
+        self.assertEqual(charges, [])
+        self.assertIsNone(self.con.execute("SELECT 1 FROM alerts WHERE kind='renew_notice'").fetchone())
+
     def test_saved_card_declined_falls_back_to_card_entry(self):
         self.cfg['payments']['manual_keva'] = True
         with self.con:

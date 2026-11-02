@@ -220,6 +220,15 @@ TEXTS = {
     'pay_saved_failed': 'החיוב בכרטיס השמור לא עבר. אפשר לשלם בכרטיס אחר.',
     'pay_saved_unknown': 'לא התקבל אישור על החיוב. אם החיוב בוצע, המנוי יתעדכן בתוך כחצי שעה.',
     'pay_ok_saved': 'תודה. החיוב בוצע, והמנוי בתוקף עד {date}.',
+    # payments.auto_renew: the server renews from the saved card on the paid-until date, after a reminder call
+    'pay_menu_auto': 'למנוי חודשי ב-{monthly} שקלים לחודש, בחידוש אוטומטי, הקישו 1. '
+                     'למנוי שנתי ב-{annual} שקלים לשנה, בחידוש אוטומטי, הקישו 2.',
+    'pay_ok_auto': 'תודה. המנוי הופעל, והוא בתוקף עד {date}. המנוי יתחדש אוטומטית. יום לפני כל חידוש '
+                   'תקבלו שיחת תזכורת, ואפשר לבטל את החידוש בכל עת: בתפריט ניהול המנוי הקישו 8.',
+    'renew_off_opt': 'לביטול החידוש האוטומטי של המנוי הקישו 8.',
+    'renew_on_opt': 'לחידוש אוטומטי של המנוי מהכרטיס השמור הקישו 8.',
+    'renew_off_done': 'החידוש האוטומטי בוטל. המנוי ימשיך לעבוד עד {date}, ולא יבוצע חיוב נוסף.',
+    'renew_on_done': 'החידוש האוטומטי הופעל. יום לפני החידוש תקבלו שיחת תזכורת.',
     'al_disconnected': 'שלום, כאן שְׁמַרְטַפוֹן. הקו בחדר התינוק התנתק.',
     'al_keys': 'לחיוג לטלפון שבחדר וחידוש הניטור, בעלות של כשקל מהפיקדון, הקישו 1. לסיום הקישו 0.',
     'rc_dialing': 'מתקשרים לטלפון שבחדר. נא להמתין על הקו.',
@@ -1469,11 +1478,22 @@ class Call:
         if err:
             return err
         self.save('acc_menu')
+        renew = self.renew_state(sub)
         return [ask('acm', [prefix, t(self.cfg, 'account_menu'),
                             t(self.cfg, 'account_pay') if self.payments_on() else None,
                             t(self.cfg, 'account_balance_opt'),
                             t(self.cfg, 'account_alerts') if self.cfg.get('alert_choice') else None,
+                            t(self.cfg, 'renew_off_opt' if renew == 'on' else 'renew_on_opt') if renew else None,
                             t(self.cfg, 'end_zero')])]
+
+    def auto_renew(self):
+        return bool((self.cfg.get('payments') or {}).get('auto_renew'))
+
+    def renew_state(self, sub):
+        """'on' / 'off' for a paid plan with a saved card when automatic renewal is enabled, else None."""
+        if not self.auto_renew() or sub['plan'] not in ('monthly', 'annual') or not self.saved_card(sub):
+            return None
+        return 'off' if sub['renew_off'] else 'on'
 
     # ----- payments (Technoline creditCard module -> Nedarim Plus) -----
     def payments_on(self):
@@ -1515,7 +1535,8 @@ class Call:
             exp = sub['expires']
             until = f', בתוקף עד {say_date(exp)}' if exp and exp >= self.day.isoformat() else ''
             prefix = t(self.cfg, 'pay_active', until=until)
-        return [ask('pplan', [prefix, t(self.cfg, 'pay_menu_manual' if self.manual_keva() else 'pay_menu',
+        menu = 'pay_menu_auto' if self.auto_renew() else 'pay_menu_manual' if self.manual_keva() else 'pay_menu'
+        return [ask('pplan', [prefix, t(self.cfg, menu,
                                          monthly=self.money(monthly), annual=self.money(annual)),
                               t(self.cfg, 'pay_deposit', price=self.price_words()) if self.deposits() else None,
                               t(self.cfg, 'back_zero_short')],
@@ -1603,7 +1624,11 @@ class Call:
             cmd.update({'sum': monthly, 'paymentsMode': 'kevaMonthly', 'kevaMonths': ''})
             self.data['pay'] = ['monthly', monthly]
         else:
-            cmd.update({'sum': annual, 'paymentsMode': 'regular'})
+            # with automatic renewal the yearly card is saved too: a standing order the sync freezes at once
+            # (Nedarim repeats orders only monthly; the server charges the year itself)
+            cmd.update({'sum': annual, 'paymentsMode': 'kevaMonthly' if self.auto_renew() else 'regular'})
+            if self.auto_renew():
+                cmd['kevaMonths'] = ''
             self.data['pay'] = ['annual', annual]
         if p.get('terminal'):
             cmd['terminal'] = str(p['terminal'])
@@ -1631,9 +1656,14 @@ class Call:
         months = 12 if plan == 'annual' else 1
         new = store.record_payment(self.con, sub['id'], source='phone', months=months, amount=amount,
                                    confirm=confirm, day=self.day)
+        if self.auto_renew():  # paying with a card again (re)starts the automatic renewal
+            self.con.execute('UPDATE subscribers SET renew_off=NULL WHERE id=?', (sub['id'],))
         sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
         until = say_date(new.isoformat() if new else sub['expires'])
-        key = 'pay_ok_monthly_manual' if plan == 'monthly' and self.manual_keva() else 'pay_ok_' + plan
+        if self.auto_renew():
+            key = 'pay_ok_auto'
+        else:
+            key = 'pay_ok_monthly_manual' if plan == 'monthly' and self.manual_keva() else 'pay_ok_' + plan
         return hangup(self.cfg, t(self.cfg, key, date=until), t(self.cfg, 'pay_next'))
 
     def on_account_menu(self, key):
@@ -1671,6 +1701,12 @@ class Call:
             return self.account(' '.join(parts))
         if key == '6' and self.cfg.get('alert_choice'):
             return self.alert_mode_menu(sub)
+        if key == '8' and self.renew_state(sub):
+            off = self.renew_state(sub) == 'on'
+            self.con.execute('UPDATE subscribers SET renew_off=? WHERE id=?', (time.time() if off else None, sub['id']))
+            store.audit(self.con, 'renew_off' if off else 'renew_on', {'id': sub['id'], 'by': 'phone'})
+            return self.account(t(self.cfg, 'renew_off_done', date=say_date(sub['expires'])) if off
+                                else t(self.cfg, 'renew_on_done'))
         return hangup(self.cfg, t(self.cfg, 'goodbye'))
 
     def alert_mode_menu(self, sub, prefix=None):

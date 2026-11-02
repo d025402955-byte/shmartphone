@@ -5,7 +5,7 @@ import time
 import store
 
 ALERT_NAMES = {'noise': 'רעש', 'disconnected': 'ניתוק', 'balance': 'פיקדון נגמר', 'reconnect': 'חיוג חוזר',
-               'verify': 'אימות מספר', 'message': 'צינתוק על הודעה'}
+               'verify': 'אימות מספר', 'message': 'צינתוק על הודעה', 'renew_notice': 'תזכורת לפני חידוש'}
 STATE_NAMES = {'sent': 'נשלחו', 'emailed': 'נשלחו למייל','answered': 'נענו', 'heard': 'נשמעו', 'skipped': 'דולגו', 'failed': 'נכשלו',
                'unknown': 'לא ידוע', 'pending': 'ממתינות', 'sending': 'בשליחה'}
 MODE_NAMES = {'activate': 'הפעלה', 'listen': 'האזנה', 'menu': 'תפריט', 'account': 'מנוי', 'alert': 'שיחת התראה',

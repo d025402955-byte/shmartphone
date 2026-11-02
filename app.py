@@ -19,6 +19,7 @@ import admin  # noqa: E402
 import core  # noqa: E402
 import ivr  # noqa: E402
 import nedarim  # noqa: E402
+import renew  # noqa: E402
 import report  # noqa: E402
 import store  # noqa: E402
 
@@ -217,6 +218,11 @@ def alert_worker(cfg, wake):
                     print('STALE_SESSIONS closed', n, flush=True)
             except Exception as e:
                 print('STALE_SESSIONS_ERROR', repr(e)[:300], flush=True)
+            try:
+                renew.run(cfg, cfg['db_path'])
+                wake.set()  # send reminder calls queued just now
+            except Exception as e:
+                print('RENEW_ERROR', repr(e)[:300], flush=True)
         if time.time() > report_retry:
             try:
                 report.run(cfg, cfg['db_path'], core.send_text_email)
