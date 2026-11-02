@@ -753,6 +753,16 @@ class PaymentTests(Base):
         self.assertEqual(charges, [])
         self.assertIsNone(self.con.execute("SELECT 1 FROM alerts WHERE kind='renew_notice'").fetchone())
 
+    def test_saved_card_orders_are_for_one_payment(self):
+        self.cfg['payments'].update({'manual_keva': True, 'auto_renew': True})
+        with self.con:
+            store.create_subscriber(self.con, main_phone='0521234567', plan='trial', status='disabled')
+        for i, key in enumerate(('1', '2')):
+            self.p = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': f'o{i}', 'PBXcallStatus': 'CALL'}
+            self.go('pay')
+            cc = self.go('pay', pplan=key)[-1]
+            self.assertEqual((cc['paymentsMode'], cc['kevaMonths']), ('kevaMonthly', '1'))
+
     def test_standing_order_gets_name_and_phone_once(self):
         with self.con:
             sid = store.create_subscriber(self.con, main_phone='0521234567', name='', plan='monthly')
@@ -808,8 +818,8 @@ class PaymentTests(Base):
         self.assertIn('הסתיימה', r[0]['files'][0]['text'])
         r = self.go(pplan='1')
         cc = r[-1]
-        self.assertEqual((cc['type'], cc['sum'], cc['paymentsMode'], cc['category']),
-                         ('creditCard', 8.9, 'kevaMonthly', f'שמרטפון {sid}'))
+        self.assertEqual((cc['type'], cc['sum'], cc['paymentsMode'], cc['category'], cc['kevaMonths']),
+                         ('creditCard', 8.9, 'kevaMonthly', f'שמרטפון {sid}', ''))
         r = self.go(payment='OK', CONFIRM_payment='555')
         self.assertEqual(r[-1]['type'], 'hangup')
         s = self.sub()

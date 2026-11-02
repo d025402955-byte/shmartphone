@@ -1620,15 +1620,17 @@ class Call:
         cmd = {'type': 'creditCard', 'name': 'payment', 'cvv': 'yes', 'tz': 'yes', 'payments': 1,
                'category': f"{p.get('category', 'שמרטפון')} {sub['id']}",
                'files': []}
+        # With a saved card (manual_keva / auto_renew) the standing order is for one payment only: it saves the
+        # card and ends with this charge, so Nedarim never charges again by itself; the server charges renewals
+        # from it (Nedarim repeats orders only monthly). The sync still freezes it, in case it stayed open.
+        once = self.manual_keva() or self.auto_renew()
         if key == '1':
-            cmd.update({'sum': monthly, 'paymentsMode': 'kevaMonthly', 'kevaMonths': ''})
+            cmd.update({'sum': monthly, 'paymentsMode': 'kevaMonthly', 'kevaMonths': '1' if once else ''})
             self.data['pay'] = ['monthly', monthly]
         else:
-            # with automatic renewal the yearly card is saved too: a standing order the sync freezes at once
-            # (Nedarim repeats orders only monthly; the server charges the year itself)
             cmd.update({'sum': annual, 'paymentsMode': 'kevaMonthly' if self.auto_renew() else 'regular'})
             if self.auto_renew():
-                cmd['kevaMonths'] = ''
+                cmd['kevaMonths'] = '1'
             self.data['pay'] = ['annual', annual]
         if p.get('terminal'):
             cmd['terminal'] = str(p['terminal'])

@@ -115,7 +115,9 @@ def freeze_new_kevas(cfg, con, details=keva_details, freeze=freeze_keva, log=pri
             d = details(cfg, keva)
             if str(d.get('KevaStatus')) == '1':
                 freeze(cfg, keva)
-            frozen = str(d.get('KevaStatus')) in ('1', '2')
+            # usable for charges: a card is saved and the order was not deleted (a one-payment order that already
+            # ended may be reported as active, frozen or ended - its card is still there)
+            frozen = str(d.get('KevaStatus')) != '3' and bool(d.get('KevaLastNum'))
             with con:
                 con.execute('UPDATE subscribers SET keva_frozen=?, card_last=? WHERE id=?',
                             (time.time() if frozen else -1, str(d.get('KevaLastNum') or '')[-4:] or None, sid))
