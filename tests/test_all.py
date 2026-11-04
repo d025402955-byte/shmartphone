@@ -743,9 +743,16 @@ class PaymentTests(Base):
             store.set_keva(self.con, sid, '777')
             self.con.execute("UPDATE subscribers SET keva_frozen=1, card_last='1234' WHERE id=?", (sid,))
         r = self.go('account')
-        self.assertIn('לביטול החידוש האוטומטי', ' '.join(f.get('text', '') for f in r[0]['files']))
-        r = self.go('account', acm='8')
-        self.assertIn('החידוש האוטומטי בוטל', ' '.join(f.get('text', '') for f in r[0]['files']))
+        self.assertIn('לביטול המנוי והחידוש האוטומטי הקישו 8', ' '.join(f.get('text', '') for f in r[0]['files']))
+        r = self.go('account', acm='8')  # first: what cancelling means, and a confirmation
+        self.assertEqual(r[0]['name'], 'rcx')
+        self.assertIn('לא יבוצע שום חיוב נוסף', r[0]['files'][0]['text'])
+        self.assertIsNone(self.sub()['renew_off'])
+        r = self.go('account', rcx='1')
+        self.assertIn('המנוי בוטל', ' '.join(f.get('text', '') for f in r[0]['files']))
+        self.assertIsNotNone(self.sub()['renew_off'])
+        st, _, out, _ = admin.handle(self.cfg, self.con, 'GET', f'/admin/sub/{sid}', '', {}, b'', DAY)
+        self.assertIn('המנוי בוטל', out.decode())
         charges = []
         for d, h in ((9, 12), (10, 12)):
             renew.run(self.cfg, self.db, lambda *a: charges.append(a) or {'Status': 'OK'},
@@ -762,6 +769,51 @@ class PaymentTests(Base):
             self.go('pay')
             cc = self.go('pay', pplan=key)[-1]
             self.assertEqual((cc['paymentsMode'], cc['kevaMonths']), ('kevaMonthly', '1'))
+
+    def test_deposit_asks_saved_or_new_card(self):
+        self.cfg['payments'].update({'manual_keva': True, 'deposits': [10, 20, 50]})
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='prepaid', status='active')
+            store.set_keva(self.con, sid, '777')
+            self.con.execute("UPDATE subscribers SET keva_frozen=1, card_last='1234' WHERE id=?", (sid,))
+        r = self.go('pay')
+        self.assertEqual(r[0]['name'], 'psav')
+        self.assertIn('לטעינת פיקדון הקישו 4', ' '.join(f['text'] for f in r[0]['files']))
+        self.go('pay', psav='4')
+        r = self.go('pay', pdep='2')
+        self.assertEqual(r[0]['name'], 'pdc')
+        self.assertIn('20 שקלים מהכרטיס השמור', r[0]['files'][0]['text'])
+        orig, charges = nedarim.charge_keva, []
+        nedarim.charge_keva = lambda c, k, amount, g, a: charges.append((k, amount, g)) or {
+            'Status': 'OK', 'TransactionId': '950', 'Confirmation': '7'}
+        try:
+            r = self.go('pay', pdc='1')
+        finally:
+            nedarim.charge_keva = orig
+        self.assertEqual(charges, [('777', 20.0, f'שמרטפון פיקדון {sid}')])
+        self.assertEqual(store.balance(self.sub()), 2000)
+        self.assertIn('הפיקדון נטען', spoken(r[0]))
+        # a new card instead: a one-payment standing order (the card is saved for next time)
+        self.p['PBXcallId'] = 'p9'
+        for k in ('psav', 'pdep', 'pdc'):
+            self.p.pop(k, None)
+        self.go('pay'); self.go('pay', psav='4'); self.go('pay', pdep='1')
+        cc = self.go('pay', pdc='2')[-1]
+        self.assertEqual((cc['type'], cc['sum'], cc['paymentsMode'], cc['kevaMonths']), ('creditCard', 10.0, 'kevaMonthly', '1'))
+
+    def test_call_durations_on_activity_page(self):
+        now = time.time()
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567')
+            self.con.execute("INSERT INTO sessions(call_id,subscriber_id,phone,started,mon_start,ended,status,mode) "
+                             "VALUES('a',?,'0521234567',?,?,?,'done','activate')", (sid, now - 4000, now - 3900, now - 300))
+            self.con.execute("INSERT INTO sessions(call_id,subscriber_id,phone,started,mon_start,status,mode) "
+                             "VALUES('b',?,'0521234567',?,?,'monitoring','activate')", (sid, now - 130, now - 65))
+        out = admin.activity_page(self.cfg, self.con)
+        self.assertIn('היסטוריית שיחות', out)
+        self.assertIn('1:01:40', out)  # the ended call: 3700 seconds
+        self.assertIn('<b>2:10</b>', out)  # the open one, so far
+        self.assertIn("data-sort='3600'", out)  # its monitoring, sortable by seconds
 
     def test_standing_order_gets_name_and_phone_once(self):
         with self.con:

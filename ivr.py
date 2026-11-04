@@ -225,10 +225,16 @@ TEXTS = {
                      'למנוי שנתי ב-{annual} שקלים לשנה, בחידוש אוטומטי, הקישו 2.',
     'pay_ok_auto': 'תודה. המנוי הופעל, והוא בתוקף עד {date}. המנוי יתחדש אוטומטית. יום לפני כל חידוש '
                    'תקבלו שיחת תזכורת, ואפשר לבטל את החידוש בכל עת: בתפריט ניהול המנוי הקישו 8.',
-    'renew_off_opt': 'לביטול החידוש האוטומטי של המנוי הקישו 8.',
-    'renew_on_opt': 'לחידוש אוטומטי של המנוי מהכרטיס השמור הקישו 8.',
-    'renew_off_done': 'החידוש האוטומטי בוטל. המנוי ימשיך לעבוד עד {date}, ולא יבוצע חיוב נוסף.',
+    'renew_off_opt': 'לביטול המנוי והחידוש האוטומטי הקישו 8.',
+    'renew_on_opt': 'המנוי שלכם בוטל ולא יחודש. לחידוש אוטומטי מהכרטיס השמור הקישו 8.',
+    'renew_cancel_ask': 'ביטול המנוי: החידוש האוטומטי יבוטל, ולא יבוצע שום חיוב נוסף בכרטיס. '
+                        'המנוי ימשיך לעבוד עד {date}, ואחר כך ייעצר. לאישור הביטול הקישו 1. לחזרה בלי לבטל הקישו 2.',
+    'renew_off_done': 'המנוי בוטל. לא יבוצע חיוב נוסף, והמנוי ימשיך לעבוד עד {date}. '
+                      'אם תתחרטו, אפשר לחדש בכל עת בתפריט זה בהקשה על 8.',
+    'renew_cancel_kept': 'המנוי לא בוטל, והוא ימשיך להתחדש אוטומטית.',
     'renew_on_done': 'החידוש האוטומטי הופעל. יום לפני החידוש תקבלו שיחת תזכורת.',
+    'deposit_card': 'לתשלום {amount} שקלים מהכרטיס השמור שמסתיים בספרות {last} הקישו 1. לתשלום בכרטיס אחר הקישו 2.',
+    'pay_saved_deposit': 'לטעינת פיקדון הקישו 4.',
     'al_disconnected': 'שלום, כאן שְׁמַרְטַפוֹן. הקו בחדר התינוק התנתק.',
     'al_keys': 'לחיוג לטלפון שבחדר וחידוש הניטור, בעלות של כשקל מהפיקדון, הקישו 1. לסיום הקישו 0.',
     'rc_dialing': 'מתקשרים לטלפון שבחדר. נא להמתין על הקו.',
@@ -413,7 +419,8 @@ class Call:
             'recording': ('rec', self.on_record), 'his_nav': ('hnav', self.on_history_nav),
             'his_sub': ('hsub', self.on_history_sub), 'pay_plan': ('pplan', self.on_pay_plan),
             'paying': ('payment', self.on_payment), 'rc_pick': ('rcon', self.on_reconnect),
-            'pay_saved': ('psav', self.on_pay_saved),
+            'pay_saved': ('psav', self.on_pay_saved), 'pay_dep_card': ('pdc', self.on_deposit_card),
+            'renew_cancel': ('rcx', self.on_renew_cancel),
             'al_menu': ('alm', self.on_alert_menu), 'rc_wait': ('rcw', self.on_reconnect_wait),
             'rc_done': ('rcd', self.on_reconnect_done), 'stop_pick': ('stp', self.on_stop_pick),
             'al_mode': ('alt', self.on_alert_mode), 'pay_dep': ('pdep', self.on_deposit_pick),
@@ -1486,6 +1493,15 @@ class Call:
                             t(self.cfg, 'renew_off_opt' if renew == 'on' else 'renew_on_opt') if renew else None,
                             t(self.cfg, 'end_zero')])]
 
+    def on_renew_cancel(self, key):
+        sub, _, err = self.subscriber(allow_inactive=True)
+        if err:
+            return err
+        if key == '1' and self.renew_state(sub) == 'on':
+            store.set_renew(self.con, sub['id'], False, 'phone')
+            return self.account(t(self.cfg, 'renew_off_done', date=say_date(sub['expires'])))
+        return self.account(t(self.cfg, 'renew_cancel_kept'))
+
     def auto_renew(self):
         return bool((self.cfg.get('payments') or {}).get('auto_renew'))
 
@@ -1527,7 +1543,9 @@ class Call:
         if last:
             self.save('pay_saved')
             return [ask('psav', [prefix, t(self.cfg, 'pay_saved', last=' '.join(last), monthly=self.money(monthly),
-                                           annual=self.money(annual)), t(self.cfg, 'back_zero_short')], timeout=8)]
+                                           annual=self.money(annual)),
+                                 t(self.cfg, 'pay_saved_deposit') if self.deposits() else None,
+                                 t(self.cfg, 'back_zero_short')], timeout=8)]
         self.save('pay_plan')
         if prefix is None and sub['status'] == 'active' and sub['plan'] in ('monthly', 'annual', 'free') and \
                 store.authorization(sub, self.day)[0]:
@@ -1564,15 +1582,56 @@ class Call:
         if not (key.isdigit() and 1 <= int(key) <= len(d)):
             return self.pay_menu(sub)
         amount = d[int(key) - 1]
+        last = self.saved_card(sub)
+        if last:  # a saved card: ask whether to use it or another card
+            self.data['dep_amount'] = amount
+            self.save('pay_dep_card')
+            return [ask('pdc', [t(self.cfg, 'deposit_card', amount=self.money(amount), last=' '.join(last))],
+                        timeout=8)]
+        return self.deposit_by_card(sub, amount)
+
+    def deposit_by_card(self, sub, amount):
         p = self.cfg.get('payments') or {}
         cmd = {'type': 'creditCard', 'name': 'payment', 'cvv': 'yes', 'tz': 'yes', 'payments': 1,
                'sum': amount, 'paymentsMode': 'regular',
                'category': f"{p.get('category', 'שמרטפון')} פיקדון {sub['id']}"}
+        if self.manual_keva():  # saved for the next top-up: a one-payment standing order (frozen by the sync)
+            cmd.update({'paymentsMode': 'kevaMonthly', 'kevaMonths': '1'})
         if p.get('terminal'):
             cmd['terminal'] = str(p['terminal'])
         self.data['pay'] = ['deposit', amount]
         self.save('paying')
         return [say(t(self.cfg, 'pay_card_intro')), cmd]
+
+    def on_deposit_card(self, key):
+        sub, _, err = self.subscriber(auto_trial=True, allow_inactive=True)
+        if err:
+            return err
+        amount = self.data.get('dep_amount')
+        if not amount or key not in ('1', '2'):
+            return self.deposit_menu()
+        if key == '2' or not self.saved_card(sub):
+            return self.deposit_by_card(sub, amount)
+        p = self.cfg.get('payments') or {}
+        self.save(None)
+        try:  # the subscriber pressed 1: their approval of this one charge
+            r = nedarim.charge_keva(self.cfg, sub['keva_id'], amount,
+                                    f"{p.get('category', 'שמרטפון')} פיקדון {sub['id']}",
+                                    f"dep-{sub['id']}-{self.call_id}")
+        except Exception as e:
+            store.audit(self.con, 'keva_charge_unknown', {'id': sub['id'], 'amount': amount, 'error': repr(e)[:150]})
+            return hangup(self.cfg, t(self.cfg, 'pay_saved_unknown'))
+        if r.get('Status') != 'OK':
+            store.audit(self.con, 'keva_charge_failed', {'id': sub['id'], 'amount': amount, 'plan': 'deposit',
+                                                         'message': str(r.get('Message'))[:150]})
+            return [say(t(self.cfg, 'pay_saved_failed'))] + self.deposit_by_card(sub, amount)
+        store.add_credit(self.con, sub['id'], round(float(amount) * 100), source='keva', amount=amount,
+                         confirm=str(r.get('Confirmation') or '') or None,
+                         transaction_id=str(r.get('TransactionId') or r.get('ID') or '') or None)
+        sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
+        bal = store.balance(sub)
+        return hangup(self.cfg, t(self.cfg, 'pay_ok_deposit', amount=self.money(bal / 100),
+                                  time=self.say_minutes(bal // self.per_minute())), t(self.cfg, 'pay_next'))
 
     def on_pay_saved(self, key):
         sub, _, err = self.subscriber(allow_inactive=True)
@@ -1580,6 +1639,8 @@ class Call:
             return err
         if key == '3':
             return self.pay_menu(sub, saved=False)
+        if key == '4' and self.deposits():
+            return self.deposit_menu()
         if key not in ('1', '2') or not self.saved_card(sub):
             if key != '0' and self.retry():
                 return self.pay_menu(sub, t(self.cfg, 'bad_key'))
@@ -1703,12 +1764,12 @@ class Call:
             return self.account(' '.join(parts))
         if key == '6' and self.cfg.get('alert_choice'):
             return self.alert_mode_menu(sub)
-        if key == '8' and self.renew_state(sub):
-            off = self.renew_state(sub) == 'on'
-            self.con.execute('UPDATE subscribers SET renew_off=? WHERE id=?', (time.time() if off else None, sub['id']))
-            store.audit(self.con, 'renew_off' if off else 'renew_on', {'id': sub['id'], 'by': 'phone'})
-            return self.account(t(self.cfg, 'renew_off_done', date=say_date(sub['expires'])) if off
-                                else t(self.cfg, 'renew_on_done'))
+        if key == '8' and self.renew_state(sub) == 'on':  # cancelling: say exactly what happens, then confirm
+            self.save('renew_cancel')
+            return [ask('rcx', [t(self.cfg, 'renew_cancel_ask', date=say_date(sub['expires']))], timeout=8)]
+        if key == '8' and self.renew_state(sub) == 'off':
+            store.set_renew(self.con, sub['id'], True, 'phone')
+            return self.account(t(self.cfg, 'renew_on_done'))
         return hangup(self.cfg, t(self.cfg, 'goodbye'))
 
     def alert_mode_menu(self, sub, prefix=None):

@@ -89,6 +89,12 @@ def build(con, now=None, day=None):
     ending = con.execute("SELECT COUNT(*) FROM subscribers WHERE status IN ('active','trial') AND plan!='free' "
                          "AND expires IS NOT NULL AND expires>=? AND expires<=?", (day.isoformat(), soon)).fetchone()[0]
     out.append(f'תוקף שנגמר ב-3 הימים הקרובים: {ending}')
+    renewals = con.execute("SELECT action, COUNT(*) FROM audit WHERE ts>=? AND action IN "
+                           "('renew_off','renew_on','renew_charged','renew_failed') GROUP BY 1", (since,)).fetchall()
+    if renewals:
+        names = {'renew_off': 'ביטלו מנוי', 'renew_on': 'החזירו חידוש', 'renew_charged': 'חודשו אוטומטית',
+                 'renew_failed': 'חידוש נכשל'}
+        out.append('חידוש אוטומטי: ' + ', '.join(f'{names[a]} {n}' for a, n in renewals))
     low = con.execute("SELECT COUNT(*) FROM subscribers WHERE plan='prepaid' AND status='active' "
                       "AND COALESCE(balance,0)<=0").fetchone()[0]
     if low:

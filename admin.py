@@ -150,6 +150,7 @@ document.querySelectorAll('table:not([data-server-sort])').forEach(function (tab
   var head = table.rows[0];
   if (!head || !head.cells.length || head.cells[0].tagName !== 'TH') return;
   function key(cell) {
+    if (cell && cell.dataset.sort !== undefined) return [1, +cell.dataset.sort];  // e.g. a duration in seconds
     var s = (cell ? cell.textContent : '').trim();
     var d = s.match(/^(\\d\\d)\\/(\\d\\d)\\/(\\d{4})(?: (\\d\\d):(\\d\\d))?/);
     if (d) return [1, +(d[3] + d[2] + d[1] + (d[4] || '00') + (d[5] || '00'))];
@@ -307,6 +308,54 @@ def new_page(cfg, msg=None, err=None, values=None):
 <button>שמירה</button></form></div>""", msg, err)
 
 
+def fmt_dur(seconds):
+    if seconds is None:
+        return ''
+    s = max(0, int(seconds))
+    return f'{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}' if s >= 3600 else f'{s // 60}:{s % 60:02d}'
+
+
+SESSION_HEAD = ('<tr><th>התחלה</th><th>סיום</th><th>משך השיחה</th><th>מתוכה ניטור</th><th>מנוי</th><th>מטלפון</th>'
+                '<th>שלוחה</th><th>התראות ל</th><th>מצב</th></tr>')
+MODE_NAMES = {'activate': 'הפעלה', 'listen': 'האזנה', 'menu': 'תפריט', 'account': 'מנוי', 'alert': 'שיחת התראה',
+              'history': 'רעשים', 'info': 'הסבר', 'message': 'הודעה', 'voicemail': 'תא קולי', 'remote': 'שליטה מרחוק',
+              'stop': 'הפסקת התראות', 'verify': 'אימות', 'phones': 'מספרים', 'parent': 'הורה', 'pay': 'תשלום'}
+
+
+def session_row(r, now=None):
+    """One call: start, end, call length and monitoring time (still running: so far, in bold)."""
+    now = now or time.time()
+    live = r['ended'] is None
+    end = now if live else r['ended']
+    total = int(end - r['started']) if r['started'] else 0
+    mon = int(end - r['mon_start']) if r['mon_start'] else 0
+    b = (lambda x: f'<b>{x}</b>') if live else (lambda x: x)
+    sub = f"<a href='/admin/sub/{r['subscriber_id']}'>#{r['subscriber_id']}</a>" if r['subscriber_id'] else ''
+    return (f"<tr><td>{fmt_ts(r['started'])}</td><td>{'פעילה' if live else fmt_ts(r['ended'])}</td>"
+            f"<td data-sort='{total}'>{b(fmt_dur(total)) if r['started'] else ''}</td>"
+            f"<td data-sort='{mon}'>{b(fmt_dur(mon)) if r['mon_start'] else ''}</td>"
+            f"<td>{sub}</td><td>{E(r['phone'] or '')}</td>"
+            f"<td>{E(MODE_NAMES.get(r['mode'], r['mode'] or ''))}</td><td>{E(r['alert_phone'] or '')}</td>"
+            f"<td>{E(r['status'] or '')}</td></tr>")
+
+
+def renew_card(cfg, s, act):
+    """Saved card and automatic renewal: what will happen, and the button to cancel or restore it."""
+    if not s['keva_id']:
+        return '<p class="muted">חידוש אוטומטי: אין כרטיס שמור.</p>'
+    card = f"כרטיס שמור {E(s['card_last'] or '????')} (הו\"ק {E(s['keva_id'])}{', מוקפאת' if (s['keva_frozen'] or 0) > 0 else ''})"
+    if s['plan'] not in ('monthly', 'annual'):
+        return f'<p class="muted">{card}. מנוי {E(store.PLANS.get(s["plan"], s["plan"]))}: אין חידוש אוטומטי.</p>'
+    form = lambda body: (f'<form method="post" action="/admin/sub/{s["id"]}/action" onsubmit="return confirm(\'בטוח?\')">'
+                         f'{hidden(cfg)}<p>{body}</p></form>')
+    if s['renew_off']:
+        return form(f'<b class="exp">המנוי בוטל</b> ב-{fmt_ts(s["renew_off"])}: לא יחודש ולא יחויב, פעיל עד '
+                    f'{fmt_date(s["expires"])}. {card}. {act("renew_on", "החזרת החידוש האוטומטי", "btn2")}')
+    on = (cfg.get('payments') or {}).get('auto_renew')
+    return form(f'חידוש אוטומטי {"פעיל" if on else "כבוי במערכת"}: חיוב ב-{fmt_date(s["expires"])}, '
+                f'תזכורת יום לפני. {card}. {act("renew_off", "ביטול המנוי (בלי חיוב נוסף)", "danger")}')
+
+
 def sub_page(cfg, con, sid, msg=None, err=None):
     s = con.execute('SELECT * FROM subscribers WHERE id=?', (sid,)).fetchone()
     if not s:
@@ -316,12 +365,11 @@ def sub_page(cfg, con, sid, msg=None, err=None):
         f"<tr><td>{E(p['phone'])}</td><td>{E(p['label'])}</td><td><form method='post' "
         f"action='/admin/sub/{sid}/action'>{hidden(cfg)}<input type='hidden' name='phone_id' value='{p['id']}'>"
         f"<button class='btn2' name='op' value='del_phone'>הסרה</button></form></td></tr>" for p in phones)
-    sessions = con.execute('SELECT * FROM sessions WHERE subscriber_id=? ORDER BY started DESC LIMIT 10',
+    sessions = con.execute('SELECT * FROM sessions WHERE subscriber_id=? ORDER BY started DESC LIMIT 30',
                            (sid,)).fetchall()
     alerts = con.execute('SELECT * FROM alerts WHERE subscriber_id=? ORDER BY id DESC LIMIT 10',
                          (sid,)).fetchall()
-    ss = ''.join(f"<tr><td>{fmt_ts(r['started'])}</td><td>{fmt_ts(r['ended'])}</td><td>{E(r['phone'] or '')}</td>"
-                 f"<td>{E(r['alert_phone'] or '')}</td><td>{E(r['status'] or '')}</td></tr>" for r in sessions)
+    ss = ''.join(session_row(r) for r in sessions)
     al = ''.join(f"<tr><td>{fmt_ts(r['created'])}</td><td>{E(r['kind'])}</td><td>{E(r['alert_phone'] or '')}</td>"
                  f"<td>{E(r['state'])}</td></tr>" for r in alerts)
     ver = con.execute('SELECT * FROM alert_phones WHERE subscriber_id=? ORDER BY verified DESC', (sid,)).fetchall()
@@ -345,6 +393,7 @@ def sub_page(cfg, con, sid, msg=None, err=None):
 {act('pay_month', 'שולם · הארכה בחודש')}{act('pay_year', 'שולם · הארכה בשנה')}
 {act('trial', 'תקופת ניסיון')}{act('enable', 'הפעלה', 'btn2')}{act('disable', 'השבתה', 'btn2')}
 {act('delete', 'מחיקה', 'danger')}</form>
+{renew_card(cfg, s, act)}
 <p class="muted">נוצר {fmt_ts(s['created'])} · עודכן {fmt_ts(s['updated'])}{' · מזהה רישומון ' + E(s['legacy_id']) if s['legacy_id'] else ''}</p></div>
 <div class="card"><h3>טלפונים מורשים נוספים</h3><table>{ph or '<tr><td class=muted>אין</td></tr>'}</table>
 <form class="row" method="post" action="/admin/sub/{sid}/action" style="margin-top:10px">{hidden(cfg)}
@@ -364,7 +413,7 @@ def sub_page(cfg, con, sid, msg=None, err=None):
 <div class="card"><h3>תשלומים</h3><p class="muted">גבייה: {E(billing)}{' · הוראת קבע ' + E(s['keva_id']) if s['keva_id'] else ''}</p>
 <div class="wrap"><table><tr><th>זמן</th><th>מסלול</th><th>סכום</th><th>מקור</th><th>אישור</th><th>בתוקף עד</th></tr>{py}</table></div></div>
 <div class="card"><h3>אירועי רעש אחרונים</h3><div class="wrap"><table><tr><th>זמן</th><th>משך</th><th>עוצמה</th><th></th></tr>{nz}</table></div></div>
-<div class="card"><h3>שיחות אחרונות</h3><div class="wrap"><table><tr><th>התחלה</th><th>סיום</th><th>מטלפון</th><th>התראות ל</th><th>מצב</th></tr>{ss}</table></div></div>
+<div class="card"><h3>שיחות אחרונות</h3><div class="wrap"><table>{SESSION_HEAD}{ss}</table></div></div>
 <div class="card"><h3>התראות אחרונות</h3><div class="wrap"><table><tr><th>זמן</th><th>סוג</th><th>אל</th><th>מצב</th></tr>{al}</table></div></div>""",
                 msg, err)
 
@@ -414,14 +463,15 @@ def activity_page(cfg, con):
                  f"<td>{('<a href=/admin/sub/' + str(m['subscriber_id']) + '>#' + str(m['subscriber_id']) + '</a>') if m['subscriber_id'] else ''}</td>"
                  f"<td>{int(m['duration'] or 0)} שנ'</td><td>{E(m['state'])}</td>"
                  f"<td>{('<a href=/admin/msg/' + str(m['id']) + '.mp3>האזנה</a>') if m['file_id'] else ''}</td></tr>" for m in msgs)
-    lv = ''.join(f"<tr><td><a href='/admin/sub/{r['subscriber_id']}'>{E(r['main_phone'] or '')}</a></td>"
-                 f"<td>{E(r['phone'] or '')}</td><td>{fmt_ts(r['started'])}</td><td>{E(r['alert_phone'] or '')}</td>"
-                 f"<td>{E(r['status'] or '')}</td></tr>" for r in live)
+    lv = ''.join(session_row(r) for r in live)
+    recent = con.execute('SELECT * FROM sessions WHERE ended IS NOT NULL ORDER BY started DESC LIMIT 200').fetchall()
+    rc = ''.join(session_row(r) for r in recent)
     al = ''.join(f"<tr><td>{fmt_ts(r['created'])}</td><td><a href='/admin/sub/{r['subscriber_id']}'>{E(r['main_phone'] or '')}</a></td>"
                  f"<td>{E(r['kind'])}</td><td>{E(r['alert_phone'] or '')}</td><td>{E(r['state'])}</td>"
                  f"<td class='muted'>{E((r['result'] or '')[:120])}</td></tr>" for r in alerts)
-    return page('פעילות', f"""{payments_card(con)}<div class="card"><h3>ניטורים פתוחים</h3><div class="wrap"><table><tr><th>מנוי</th><th>מטלפון</th>
-<th>התחלה</th><th>התראות ל</th><th>מצב</th></tr>{lv}</table></div></div>
+    return page('פעילות', f"""{payments_card(con)}<div class="card"><h3>ניטורים ושיחות פתוחים</h3><div class="wrap"><table>{SESSION_HEAD}{lv}</table></div></div>
+<div class="card"><h3>היסטוריית שיחות</h3><p class="muted">200 השיחות האחרונות שהסתיימו</p>
+<div class="wrap"><table>{SESSION_HEAD}{rc}</table></div></div>
 <div class="card"><h3>הודעות לשירות הלקוחות</h3><div class="wrap"><table><tr><th>זמן</th><th>מטלפון</th><th>מנוי</th>
 <th>אורך</th><th>מצב</th><th></th></tr>{ms}</table></div></div>
 <div class="card"><h3>התראות אחרונות</h3><div class="wrap"><table><tr><th>זמן</th><th>מנוי</th><th>סוג</th><th>אל</th>
@@ -577,6 +627,8 @@ def handle(cfg, con, method, path, query, headers, body, day):
                 elif op == 'trial':
                     store.update_subscriber(con, sid, status='trial', plan='trial',
                                             expires=default_expiry(cfg, 'trial', day))
+                elif op in ('renew_off', 'renew_on'):
+                    store.set_renew(con, sid, op == 'renew_on', 'admin')
                 elif op == 'enable':
                     store.update_subscriber(con, sid, status='active')
                 elif op == 'disable':

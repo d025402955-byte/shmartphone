@@ -277,6 +277,12 @@ def authorization(sub, day):
     return False, 'unknown'
 
 
+def set_renew(con, sid, on, by):
+    """Automatic renewal on / off (off = the subscription is cancelled: it runs to its paid-until date, no charge)."""
+    con.execute('UPDATE subscribers SET renew_off=?, updated=? WHERE id=?', (None if on else time.time(), time.time(), sid))
+    audit(con, 'renew_on' if on else 'renew_off', {'id': sid, 'by': by})
+
+
 def set_keva(con, sid, keva_id):
     """Remember the subscriber's standing order; a new one is not frozen yet (the next sync freezes it)."""
     keva_id = str(keva_id).lstrip('-')  # a charge joined to the order shows its id with a minus

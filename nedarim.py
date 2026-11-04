@@ -209,6 +209,8 @@ def apply_transactions(cfg, con, rows, log=print):
             continue  # cancelled, refund or temporary transaction
         dep = match_deposit(cfg, con, tx)
         if dep:
+            if str(tx.get('KevaId') or '').strip():  # a deposit paid by card saves the card too (one-payment order)
+                store.set_keva(con, dep, str(tx.get('KevaId')).strip())
             if store.add_credit(con, dep, round(amount * 100), source='nedarim', amount=amount,
                                 confirm=str(tx.get('Confirmation')), transaction_id=str(tid)) is not None:
                 applied += 1
