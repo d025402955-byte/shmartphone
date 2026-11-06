@@ -156,6 +156,20 @@ class IvrTests(Base):
         self.assertEqual((sub['status'], sub['expires']), ('trial', '2026-10-30'))
         self.assertFalse(store.trial_renewable(sub, datetime.date(2026, 11, 5)))  # one trial only, no renewal
 
+    def test_main_menu_says_free_week_and_alert_gap_once(self):
+        p = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'w1', 'PBXcallStatus': 'CALL'}
+        with self.con:
+            r = ivr.handle(self.cfg, self.con, dict(p), DAY, 'menu')[0]
+        self.assertEqual(r[0]['type'], 'simpleMessage')
+        intro = spoken(r[0])
+        self.assertIn('שבוע ראשון', intro)
+        self.assertIn('חינם', intro)
+        self.assertIn('לכל היותר פעם בשתי דקות', intro)
+        self.assertEqual(r[-1]['type'], 'simpleMenu')
+        with self.con:  # back to the menu in the same call: no intro again
+            r = ivr.handle(self.cfg, self.con, {**p, 'menu': 'ERROR'}, DAY, 'menu')[0]
+        self.assertNotIn('חינם', ' '.join(spoken(x) for x in r if x.get('files')))
+
     def test_disabled_rejected_and_no_auto_trial(self):
         sid = self.sub_with(status='disabled')
         with self.con:  # already had the one renewed trial
@@ -283,8 +297,8 @@ class IvrTests(Base):
 
     def test_menu_info_and_message(self):
         r = self.call('0599999999', mode='menu')
-        self.assertEqual(r[0]['type'], 'simpleMenu')
-        self.assertNotIn('7', r[0]['enabledKeys'].split(','))  # 7 and 8 moved under 2
+        self.assertEqual(r[-1]['type'], 'simpleMenu')
+        self.assertNotIn('7', r[-1]['enabledKeys'].split(','))  # 7 and 8 moved under 2
         r = self.send(menu='3')
         self.assertEqual((r[0]['type'], r[-1]['type'], r[-1]['name']), ('simpleMessage', 'simpleMenu', 'menu'))
         r = self.send(menu='ERROR')  # no key after the menu repeated: the call really ends

@@ -38,8 +38,12 @@ HEB_MONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', '�
 VERIFY_TTL = 30 * 60
 
 TEXTS = {
-    'menu': 'ברוכים הבאים לשְׁמַרְטַפוֹן, המערכת החכמה שתסייע בשמירה על ילדיכם ותעניק לכם שקט נפשי כאשר אתם יוצאים מהבית. '
-            'לשימוש בטלפון זה לחדר התינוק, הקישו 1. לשליטה מרחוק, האזנה לחדר, רעשים והפסקת התראות, הקישו 2. '
+    # said once when the call comes in; the menu itself (repeated if no key is pressed) follows
+    'menu_welcome': 'ברוכים הבאים לשְׁמַרְטַפוֹן, המערכת החכמה שתסייע בשמירה על ילדיכם ותעניק לכם שקט נפשי כאשר אתם '
+                    'יוצאים מהבית.',
+    'menu_promo': 'חדש: שבוע ראשון בשְׁמַרְטַפוֹן חינם! ספרו לחברים ולשכנים.',
+    'menu_alerts_note': 'לידיעתכם: כדי לא להטריד, התראה על רעש בחדר נשלחת לכל היותר פעם ב{gap}.',
+    'menu': 'לשימוש בטלפון זה לחדר התינוק, הקישו 1. לשליטה מרחוק, האזנה לחדר, רעשים והפסקת התראות, הקישו 2. '
             'להסברים, הקישו 3. לניהול המנוי ולהצטרפות מנויים חדשים, הקישו 4. לשליחת הודעה, הקישו 9.',
     'info': 'שְׁמַרְטַפוֹן הוא שירות שמאפשר לכם לצאת מהבית בשקט, כשהילדים ישנים. '
             'משאירים בחדר טלפון, מתקשרים ממנו למערכת, ומקישים 1 להפעלת השְׁמַרְטַפוֹן. '
@@ -404,6 +408,7 @@ class Call:
 
     # ----- dispatch -----
     def run(self, mode):
+        self.mode = mode
         p = self.p
         if p.get('PBXcallStatus') == 'HANGUP':
             return self.on_hangup()
@@ -462,12 +467,22 @@ class Call:
     def menu(self, prefix=None, notices=True):
         if notices:
             offer = self.alert_notices()
-            if offer:
+            if offer:  # a parent calling back after an alert hears the alert first, and no welcome after it
+                self.data['welcomed'] = True
+                self.save(self.sess['step'] if self.sess else None)
                 return offer
+        intro = []
+        if notices and getattr(self, 'mode', None) == 'menu' and not self.data.get('welcomed'):
+            # once per call into the main menu (not alert calls): welcome, the free-week offer, how often alerts come
+            self.data['welcomed'] = True
+            gap = int(float(self.cfg.get('alert_cooldown', 120)) // 60)
+            intro = [t(self.cfg, 'menu_welcome'), t(self.cfg, 'menu_promo'),
+                     t(self.cfg, 'menu_alerts_note', gap={1: 'דקה', 2: 'שתי דקות'}.get(gap, f'{gap} דקות'))]
         self.save('menu')
         files = [{'text': x} for x in ([prefix] if isinstance(prefix, str) else (prefix or [])) if x]
-        return [{'type': 'simpleMenu', 'name': 'menu', 'enabledKeys': ','.join(MENU_KEYS), 'times': 3,
-                 'timeout': 7, 'errorReturn': 'ERROR', 'files': files + [{'text': t(self.cfg, 'menu')}]}]
+        menu = {'type': 'simpleMenu', 'name': 'menu', 'enabledKeys': ','.join(MENU_KEYS), 'times': 3,
+                'timeout': 7, 'errorReturn': 'ERROR', 'files': files + [{'text': t(self.cfg, 'menu')}]}
+        return [say(*intro), menu] if intro else [menu]
 
     # ----- 2: listen / noise history / stop alerts -----
     def parent_menu(self):
