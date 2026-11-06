@@ -42,7 +42,7 @@ TEXTS = {
     'menu_welcome': 'ברוכים הבאים לשְׁמַרְטַפוֹן, המערכת החכמה שתסייע בשמירה על ילדיכם ותעניק לכם שקט נפשי כאשר אתם '
                     'יוצאים מהבית.',
     'menu_promo': 'חדש: שבוע ראשון בשְׁמַרְטַפוֹן חינם! ספרו לחברים ולשכנים.',
-    'menu_alerts_note': 'לידיעתכם: כדי לא להטריד, התראה על רעש בחדר נשלחת לכל היותר פעם ב{gap}.',
+    'menu_alerts_note': 'לידיעתכם: כדי לא להטריד, התראה על רעש בחדר נשלחת לכל היותר פעם ב{gap}. אפשר לשנות זאת, וגם את הרגישות לרעש, בניהול המנוי.',
     'menu': 'לשימוש בטלפון זה לחדר התינוק, הקישו 1. לשליטה מרחוק, האזנה לחדר, רעשים והפסקת התראות, הקישו 2. '
             'להסברים, הקישו 3. לניהול המנוי ולהצטרפות מנויים חדשים, הקישו 4. לשליחת הודעה, הקישו 9.',
     'info': 'שְׁמַרְטַפוֹן הוא שירות שמאפשר לכם לצאת מהבית בשקט, כשהילדים ישנים. '
@@ -146,6 +146,15 @@ TEXTS = {
     'balance_reconnects': 'היתרה מספיקה לכ-{n} חיוגים חוזרים לטלפון שבחדר.',
     'balance_load': 'לטעינת פיקדון הקישו 5, ואחר כך 3.',
     'account_alerts': 'לבחירת סוג ההתראות הקישו 6.',
+    'account_settings_opt': 'להגדרת רגישות לרעש וזמן בין ההתראות הקישו 9.',
+    'settings_menu': 'רגישות לרעש כרגע: {level}. התראה לכל היותר פעם ב{gap}. '
+                     'לשינוי הרגישות הקישו 1. לשינוי הזמן בין ההתראות הקישו 2. לחזרה הקישו 0.',
+    'sens_menu': 'לרגישות גבוהה מאוד, גם לדיבור שקט, הקישו 1. לרגישות גבוהה הקישו 2. לרגישות רגילה הקישו 3. '
+                 'לרגישות נמוכה, רק לבכי חזק, הקישו 4.',
+    'gap_menu': 'להתראה לכל היותר פעם בדקה הקישו 1. פעם בשתי דקות הקישו 2. פעם בחמש דקות הקישו 3. '
+                'פעם בעשר דקות הקישו 4.',
+    'sens_saved': 'נשמר: רגישות {level}. השינוי יחול מהניטור הבא.',
+    'gap_saved': 'נשמר: התראה לכל היותר פעם ב{gap}.',
     'alerts_menu': 'סוג ההתראות כרגע: {mode}. לצינתוק חינם, ואחריו מתקשרים לשמוע מה קרה, הקישו 1. '
                    'להודעה קולית מלאה, בתשלום לפי עלות השיחה מתוך הפיקדון, הקישו 2. לחזרה הקישו 0.',
     'alerts_voice_opt': 'להודעה קצרה חינם הקישו 3.',
@@ -426,7 +435,8 @@ class Call:
             'his_sub': ('hsub', self.on_history_sub), 'pay_plan': ('pplan', self.on_pay_plan),
             'paying': ('payment', self.on_payment), 'rc_pick': ('rcon', self.on_reconnect),
             'pay_saved': ('psav', self.on_pay_saved), 'pay_dep_card': ('pdc', self.on_deposit_card),
-            'renew_cancel': ('rcx', self.on_renew_cancel),
+            'renew_cancel': ('rcx', self.on_renew_cancel), 'set_menu': ('setm', self.on_settings_menu),
+            'set_sens': ('sens', self.on_set_sensitivity), 'set_gap': ('sgap', self.on_set_gap),
             'al_menu': ('alm', self.on_alert_menu), 'rc_wait': ('rcw', self.on_reconnect_wait),
             'rc_done': ('rcd', self.on_reconnect_done), 'stop_pick': ('stp', self.on_stop_pick),
             'al_mode': ('alt', self.on_alert_mode), 'pay_dep': ('pdep', self.on_deposit_pick),
@@ -749,6 +759,8 @@ class Call:
         params = {'threshold': 55, 'minDuration': 2, 'maxGap': 0.5, 'silenceEnd': 3, 'preRoll': 2,
                   'maxClip': 120, 'cooldown': 0, 'maxListeners': 1, 'joinBeep': 'no'}  # no beep in the room when a parent joins
         params.update(self.cfg.get('monitor', {}))
+        if sub['noise_threshold']:  # the subscriber's own sensitivity (account menu, key 9)
+            params['threshold'] = int(sub['noise_threshold'])
         cmd.update(params)
         intro = []
         if sub['plan'] == 'prepaid':
@@ -1506,9 +1518,52 @@ class Call:
                             t(self.cfg, 'account_pay') if self.payments_on() else None,
                             t(self.cfg, 'account_balance_opt'),
                             t(self.cfg, 'account_alerts') if self.cfg.get('alert_choice') else None,
+                            t(self.cfg, 'account_settings_opt'),
                             t(self.cfg, {'on': 'renew_off_opt', 'off': 'renew_on_opt',
                                          'cancelled': 'renew_cancelled_note'}[renew]) if renew else None,
                             t(self.cfg, 'end_zero')])]
+
+    # ----- account 9: the subscriber's own noise sensitivity and time between alerts -----
+    def settings_menu(self, sub, prefix=None):
+        threshold = sub['noise_threshold'] or int((self.cfg.get('monitor') or {}).get('threshold', 55))
+        gap = sub['alert_gap'] or int(float(self.cfg.get('alert_cooldown', 120)))
+        self.save('set_menu')
+        return [ask('setm', [prefix, t(self.cfg, 'settings_menu', level=store.sensitivity_name(threshold),
+                                       gap=store.gap_name(gap))], timeout=8)]
+
+    def on_settings_menu(self, key):
+        sub, _, err = self.subscriber(allow_inactive=True)
+        if err:
+            return err
+        if key == '1':
+            self.save('set_sens')
+            return [ask('sens', [t(self.cfg, 'sens_menu')], timeout=8)]
+        if key == '2':
+            self.save('set_gap')
+            return [ask('sgap', [t(self.cfg, 'gap_menu')], timeout=8)]
+        return self.account()
+
+    def on_set_sensitivity(self, key):
+        sub, _, err = self.subscriber(allow_inactive=True)
+        if err:
+            return err
+        if key not in store.SENSITIVITY:
+            return self.settings_menu(sub)
+        value, name = store.SENSITIVITY[key]
+        store.set_monitor_settings(self.con, sub['id'], 'phone', threshold=value)
+        sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
+        return self.settings_menu(sub, t(self.cfg, 'sens_saved', level=name))
+
+    def on_set_gap(self, key):
+        sub, _, err = self.subscriber(allow_inactive=True)
+        if err:
+            return err
+        if key not in store.ALERT_GAPS:
+            return self.settings_menu(sub)
+        value, name = store.ALERT_GAPS[key]
+        store.set_monitor_settings(self.con, sub['id'], 'phone', gap=value)
+        sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
+        return self.settings_menu(sub, t(self.cfg, 'gap_saved', gap=name))
 
     def on_renew_cancel(self, key):
         sub, _, err = self.subscriber(allow_inactive=True)
@@ -1782,6 +1837,8 @@ class Call:
             if self.payments_on() and self.deposits():
                 parts.append(t(self.cfg, 'balance_load'))
             return self.account(' '.join(parts))
+        if key == '9':
+            return self.settings_menu(sub)
         if key == '6' and self.cfg.get('alert_choice'):
             return self.alert_mode_menu(sub)
         if key == '8' and self.renew_state(sub) == 'on':  # cancelling: say exactly what happens, then confirm

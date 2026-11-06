@@ -126,7 +126,7 @@ MIGRATIONS = {
     'subscribers': [('billing', 'TEXT'), ('keva_id', 'TEXT'), ('balance', 'INTEGER'), ('alert_mode', 'TEXT'),
                     ('alert_extra', 'TEXT'), ('alert_backup', 'TEXT'), ('trial_renewed', 'REAL'),
                     ('keva_frozen', 'REAL'), ('card_last', 'TEXT'), ('renew_off', 'REAL'),
-                    ('keva_named', 'TEXT')],
+                    ('keva_named', 'TEXT'), ('noise_threshold', 'INTEGER'), ('alert_gap', 'INTEGER')],
 }
 
 
@@ -275,6 +275,33 @@ def authorization(sub, day):
         # nothing renews by itself (no standing orders): blocked the day after the paid-until date, until paid
         return (exp >= day.isoformat()), 'expired'
     return False, 'unknown'
+
+
+# the subscriber's own monitoring settings (account menu, key 9); None = the system default
+SENSITIVITY = {'1': (40, 'גבוהה מאוד'), '2': (47, 'גבוהה'), '3': (55, 'רגילה'), '4': (65, 'נמוכה')}
+ALERT_GAPS = {'1': (60, 'דקה'), '2': (120, 'שתי דקות'), '3': (300, 'חמש דקות'), '4': (600, 'עשר דקות')}
+
+
+def sensitivity_name(threshold):
+    for value, name in SENSITIVITY.values():
+        if value == threshold:
+            return name
+    return f'סף {threshold}'
+
+
+def gap_name(seconds):
+    for value, name in ALERT_GAPS.values():
+        if value == seconds:
+            return name
+    return f'{seconds // 60} דקות'
+
+
+def set_monitor_settings(con, sid, by, threshold=None, gap=None):
+    if threshold is not None:
+        con.execute('UPDATE subscribers SET noise_threshold=? WHERE id=?', (int(threshold), sid))
+    if gap is not None:
+        con.execute('UPDATE subscribers SET alert_gap=? WHERE id=?', (int(gap), sid))
+    audit(con, 'monitor_settings', {'id': sid, 'threshold': threshold, 'gap': gap, 'by': by})
 
 
 def set_renew(con, sid, on, by):

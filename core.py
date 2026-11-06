@@ -90,7 +90,8 @@ def handle_event(cfg, con, ev, header_event, now=None):
     key = f"{kind}:{ev.get('eventId') or call_id}"
     if con.execute('SELECT 1 FROM alerts WHERE unique_key=?', (key,)).fetchone():
         return 200, 'duplicate'
-    cooldown = float(cfg.get('alert_cooldown', 120))
+    own = con.execute('SELECT alert_gap FROM subscribers WHERE id=?', (sess['subscriber_id'],)).fetchone()
+    cooldown = float((own and own[0]) or cfg.get('alert_cooldown', 120))  # the subscriber's choice, else the default
     recent = con.execute(
         "SELECT 1 FROM alerts WHERE subscriber_id=? AND kind=? AND created>? "
         "AND state IN ('pending','sending','sent','demo','unknown')",

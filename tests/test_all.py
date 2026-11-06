@@ -856,6 +856,36 @@ class PaymentTests(Base):
         self.assertIn('חידוש אוטומטי', out)
         self.assertIn('סירוב', out)
 
+    def test_subscriber_sets_sensitivity_and_alert_gap(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='annual', status='active',
+                                          expires='2027-11-10')
+        r = self.go('account')
+        self.assertIn('הקישו 9', ' '.join(f.get('text', '') for f in r[0]['files']))
+        r = self.go('account', acm='9')
+        self.assertIn('רגישות לרעש כרגע: רגילה', r[0]['files'][0]['text'])
+        self.go('account', setm='1')
+        r = self.go('account', sens='2')
+        self.assertIn('נשמר: רגישות גבוהה', ' '.join(f.get('text', '') for f in r[0]['files']))
+        self.go('account', setm='2')
+        self.go('account', sgap='3')
+        s = self.sub()
+        self.assertEqual((s['noise_threshold'], s['alert_gap']), (47, 300))
+        # the next monitoring uses the subscriber's threshold; alerts use the subscriber's gap
+        cfg = {**self.cfg, 'alert_cooldown': 120}
+        with self.con:
+            self.con.execute("INSERT INTO sessions(call_id,subscriber_id,room_id,alert_phone,started,status) "
+                             "VALUES('m1',?,'r1','0501112222',?,'monitoring')", (sid, time.time()))
+        now = time.time()
+        ev = lambda eid, at: core.handle_event(cfg, self.con, {'event': 'noise', 'time': at, 'roomId': 'r1',
+                                                                'callId': 'm1', 'num': PBX, 'eventId': eid}, 'noise', now=at)
+        with self.con:
+            self.assertEqual(ev('a', now)[1], 'queued')
+            self.assertEqual(ev('b', now + 200)[1], 'cooldown')  # within this subscriber's 5 minutes
+            self.assertEqual(ev('c', now + 310)[1], 'queued')
+        out = admin.sub_page(self.cfg, self.con, sid)
+        self.assertIn('שמירת הגדרות ניטור', out)
+
     def test_any_paid_subscriber_can_cancel(self):
         self.cfg['payments'].update({'manual_keva': True, 'auto_renew': True})
         with self.con:  # an annual subscriber with no saved card (e.g. imported)
@@ -1503,6 +1533,12 @@ class PingAndDepositTests(Base):
         r = self.start_room()
         self.assertNotIn(sp('0501112222'), spoken(r[0]))  # the number is not read out
         self.assertNotIn('maxDuration', r[-1])
+        self.assertEqual(r[-1]['threshold'], 55)
+
+    def test_own_sensitivity_used_when_monitoring_starts(self):
+        with self.con:
+            self.con.execute('UPDATE subscribers SET noise_threshold=40 WHERE id=?', (self.sid,))
+        self.assertEqual(self.start_room()[-1]['threshold'], 40)
 
     def test_ping_payload_and_fallback(self):
         sent = []

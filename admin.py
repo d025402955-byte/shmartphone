@@ -339,6 +339,19 @@ def session_row(r, now=None):
             f"<td>{E(r['status'] or '')}</td></tr>")
 
 
+def monitor_settings_form(cfg, s):
+    """The subscriber's noise sensitivity and time between alerts (also set by phone: account menu, key 9)."""
+    default_th = int((cfg.get('monitor') or {}).get('threshold', 55))
+    default_gap = int(float(cfg.get('alert_cooldown', 120)))
+    th = {'': f'ברירת מחדל ({store.sensitivity_name(default_th)})',
+          **{str(v): f'{n} (סף {v})' for v, n in store.SENSITIVITY.values()}}
+    gap = {'': f'ברירת מחדל ({store.gap_name(default_gap)})', **{str(v): n for v, n in store.ALERT_GAPS.values()}}
+    return (f'<form class="row" method="post" action="/admin/sub/{s["id"]}/action">{hidden(cfg)}'
+            f'<label>רגישות לרעש<select name="noise_threshold">{options(th, str(s["noise_threshold"] or ""))}</select></label>'
+            f'<label>התראה לכל היותר פעם ב<select name="alert_gap">{options(gap, str(s["alert_gap"] or ""))}</select></label>'
+            f'<button class="btn2" name="op" value="monitor_settings">שמירת הגדרות ניטור</button></form>')
+
+
 def renew_card(cfg, s, act):
     """Saved card and automatic renewal: what will happen, and the button to cancel or restore it."""
     card = (f"כרטיס שמור {E(s['card_last'] or '????')} (הו\"ק {E(s['keva_id'])}"
@@ -396,6 +409,7 @@ def sub_page(cfg, con, sid, msg=None, err=None):
 {act('trial', 'תקופת ניסיון')}{act('enable', 'הפעלה', 'btn2')}{act('disable', 'השבתה', 'btn2')}
 {act('delete', 'מחיקה', 'danger')}</form>
 {renew_card(cfg, s, act)}
+{monitor_settings_form(cfg, s)}
 <p class="muted">נוצר {fmt_ts(s['created'])} · עודכן {fmt_ts(s['updated'])}{' · מזהה רישומון ' + E(s['legacy_id']) if s['legacy_id'] else ''}</p></div>
 <div class="card"><h3>טלפונים מורשים נוספים</h3><table>{ph or '<tr><td class=muted>אין</td></tr>'}</table>
 <form class="row" method="post" action="/admin/sub/{sid}/action" style="margin-top:10px">{hidden(cfg)}
@@ -629,6 +643,11 @@ def handle(cfg, con, method, path, query, headers, body, day):
                 elif op == 'trial':
                     store.update_subscriber(con, sid, status='trial', plan='trial',
                                             expires=default_expiry(cfg, 'trial', day))
+                elif op == 'monitor_settings':
+                    th, gap = f.get('noise_threshold') or '', f.get('alert_gap') or ''
+                    con.execute('UPDATE subscribers SET noise_threshold=?, alert_gap=? WHERE id=?',
+                                (int(th) if th.isdigit() else None, int(gap) if gap.isdigit() else None, sid))
+                    store.audit(con, 'monitor_settings', {'id': sid, 'threshold': th, 'gap': gap, 'by': 'admin'})
                 elif op in ('renew_off', 'renew_on'):
                     store.set_renew(con, sid, op == 'renew_on', 'admin')
                 elif op == 'enable':
