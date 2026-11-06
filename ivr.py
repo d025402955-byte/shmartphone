@@ -231,7 +231,8 @@ TEXTS = {
                         'המנוי ימשיך לעבוד עד {date}, ואחר כך ייעצר. לאישור הביטול הקישו 1. לחזרה בלי לבטל הקישו 2.',
     'renew_off_done': 'המנוי בוטל. לא יבוצע חיוב נוסף, והמנוי ימשיך לעבוד עד {date}. '
                       'אם תתחרטו, אפשר לחדש בכל עת בתפריט זה בהקשה על 8.',
-    'renew_cancel_kept': 'המנוי לא בוטל, והוא ימשיך להתחדש אוטומטית.',
+    'renew_cancelled_note': 'המנוי שלכם בוטל ולא יחודש. לחידוש המנוי בתשלום הקישו 5.',
+    'renew_cancel_kept':'המנוי לא בוטל, והוא ימשיך להתחדש אוטומטית.',
     'renew_on_done': 'החידוש האוטומטי הופעל. יום לפני החידוש תקבלו שיחת תזכורת.',
     'deposit_card': 'לתשלום {amount} שקלים מהכרטיס השמור שמסתיים בספרות {last} הקישו 1. לתשלום בכרטיס אחר הקישו 2.',
     'pay_saved_deposit': 'לטעינת פיקדון הקישו 4.',
@@ -1490,7 +1491,8 @@ class Call:
                             t(self.cfg, 'account_pay') if self.payments_on() else None,
                             t(self.cfg, 'account_balance_opt'),
                             t(self.cfg, 'account_alerts') if self.cfg.get('alert_choice') else None,
-                            t(self.cfg, 'renew_off_opt' if renew == 'on' else 'renew_on_opt') if renew else None,
+                            t(self.cfg, {'on': 'renew_off_opt', 'off': 'renew_on_opt',
+                                         'cancelled': 'renew_cancelled_note'}[renew]) if renew else None,
                             t(self.cfg, 'end_zero')])]
 
     def on_renew_cancel(self, key):
@@ -1506,10 +1508,13 @@ class Call:
         return bool((self.cfg.get('payments') or {}).get('auto_renew'))
 
     def renew_state(self, sub):
-        """'on' / 'off' for a paid plan with a saved card when automatic renewal is enabled, else None."""
-        if not self.auto_renew() or sub['plan'] not in ('monthly', 'annual') or not self.saved_card(sub):
+        """'on' / 'off' for an active paid plan (monthly / annual) when automatic renewal is enabled, else None.
+        Every such subscriber can cancel, with or without a saved card; restoring needs a saved card."""
+        if not self.auto_renew() or sub['plan'] not in ('monthly', 'annual') or sub['status'] != 'active':
             return None
-        return 'off' if sub['renew_off'] else 'on'
+        if sub['renew_off']:
+            return 'off' if self.saved_card(sub) else 'cancelled'
+        return 'on'
 
     # ----- payments (Technoline creditCard module -> Nedarim Plus) -----
     def payments_on(self):

@@ -842,6 +842,18 @@ class PaymentTests(Base):
         self.assertIn('חידוש אוטומטי', out)
         self.assertIn('סירוב', out)
 
+    def test_any_paid_subscriber_can_cancel(self):
+        self.cfg['payments'].update({'manual_keva': True, 'auto_renew': True})
+        with self.con:  # an annual subscriber with no saved card (e.g. imported)
+            store.create_subscriber(self.con, main_phone='0521234567', plan='annual', status='active',
+                                    expires='2027-11-10')
+        r = self.go('account')
+        self.assertIn('לביטול המנוי והחידוש האוטומטי הקישו 8', ' '.join(f.get('text', '') for f in r[0]['files']))
+        self.go('account', acm='8')
+        r = self.go('account', rcx='1')
+        self.assertIn('המנוי בוטל', ' '.join(f.get('text', '') for f in r[0]['files']))
+        self.assertIn('המנוי שלכם בוטל ולא יחודש', ' '.join(f.get('text', '') for f in r[0]['files']))
+
     def test_saved_card_declined_falls_back_to_card_entry(self):
         self.cfg['payments']['manual_keva'] = True
         with self.con:

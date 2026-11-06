@@ -341,9 +341,10 @@ def session_row(r, now=None):
 
 def renew_card(cfg, s, act):
     """Saved card and automatic renewal: what will happen, and the button to cancel or restore it."""
-    if not s['keva_id']:
+    if not s['keva_id'] and s['plan'] not in ('monthly', 'annual'):
         return '<p class="muted">חידוש אוטומטי: אין כרטיס שמור.</p>'
-    card = f"כרטיס שמור {E(s['card_last'] or '????')} (הו\"ק {E(s['keva_id'])}{', מוקפאת' if (s['keva_frozen'] or 0) > 0 else ''})"
+    card = (f"כרטיס שמור {E(s['card_last'] or '????')} (הו\"ק {E(s['keva_id'])}"
+            f"{', מוקפאת' if (s['keva_frozen'] or 0) > 0 else ''})") if s['keva_id'] else 'אין כרטיס שמור: לא יחויב, ישלם בעצמו'
     if s['plan'] not in ('monthly', 'annual'):
         return f'<p class="muted">{card}. מנוי {E(store.PLANS.get(s["plan"], s["plan"]))}: אין חידוש אוטומטי.</p>'
     form = lambda body: (f'<form method="post" action="/admin/sub/{s["id"]}/action" onsubmit="return confirm(\'בטוח?\')">'
