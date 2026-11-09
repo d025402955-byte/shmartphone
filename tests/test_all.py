@@ -886,6 +886,21 @@ class PaymentTests(Base):
         out = admin.sub_page(self.cfg, self.con, sid)
         self.assertIn('שמירת הגדרות ניטור', out)
 
+    def test_subscriber_sets_noise_duration(self):
+        with self.con:
+            store.create_subscriber(self.con, main_phone='0521234567', plan='annual', status='active',
+                                    expires='2027-11-10')
+        self.go('account')
+        r = self.go('account', acm='9')
+        self.assertIn('התראה נשלחת על רעש שנמשך שתי שניות', r[0]['files'][0]['text'])
+        r = self.go('account', setm='3')
+        self.assertEqual(r[0]['name'], 'ssec')
+        r = self.go('account', ssec='4')
+        self.assertIn('נשמר: התראה על רעש שנמשך 5 שניות', ' '.join(f.get('text', '') for f in r[0]['files']))
+        self.assertEqual(self.sub()['noise_seconds'], 5)
+        out = admin.sub_page(self.cfg, self.con, self.sub()['id'])
+        self.assertIn('התראה על רעש שנמשך', out)
+
     def test_any_paid_subscriber_can_cancel(self):
         self.cfg['payments'].update({'manual_keva': True, 'auto_renew': True})
         with self.con:  # an annual subscriber with no saved card (e.g. imported)
@@ -1539,6 +1554,11 @@ class PingAndDepositTests(Base):
         with self.con:
             self.con.execute('UPDATE subscribers SET noise_threshold=40 WHERE id=?', (self.sid,))
         self.assertEqual(self.start_room()[-1]['threshold'], 40)
+
+    def test_own_noise_duration_used_when_monitoring_starts(self):
+        with self.con:
+            self.con.execute('UPDATE subscribers SET noise_seconds=5 WHERE id=?', (self.sid,))
+        self.assertEqual(self.start_room()[-1]['minDuration'], 5)
 
     def test_ping_payload_and_fallback(self):
         sent = []

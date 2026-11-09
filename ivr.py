@@ -146,9 +146,13 @@ TEXTS = {
     'balance_reconnects': 'היתרה מספיקה לכ-{n} חיוגים חוזרים לטלפון שבחדר.',
     'balance_load': 'לטעינת פיקדון הקישו 5, ואחר כך 3.',
     'account_alerts': 'לבחירת סוג ההתראות הקישו 6.',
-    'account_settings_opt': 'להגדרת רגישות לרעש וזמן בין ההתראות הקישו 9.',
-    'settings_menu': 'רגישות לרעש כרגע: {level}. התראה לכל היותר פעם ב{gap}. '
-                     'לשינוי הרגישות הקישו 1. לשינוי הזמן בין ההתראות הקישו 2. לחזרה הקישו 0.',
+    'account_settings_opt': 'להגדרת רגישות לרעש, משך הרעש וזמן בין ההתראות הקישו 9.',
+    'settings_menu': 'רגישות לרעש כרגע: {level}. התראה נשלחת על רעש שנמשך {secs}. התראה לכל היותר פעם ב{gap}. '
+                     'לשינוי הרגישות הקישו 1. לשינוי הזמן בין ההתראות הקישו 2. '
+                     'לשינוי משך הרעש שמפעיל התראה הקישו 3. לחזרה הקישו 0.',
+    'secs_menu': 'התראה על רעש שנמשך שנייה אחת הקישו 1. שתי שניות הקישו 2. שלוש שניות הקישו 3. '
+                 'חמש שניות הקישו 4. עשר שניות הקישו 5.',
+    'secs_saved': 'נשמר: התראה על רעש שנמשך {secs}. השינוי יחול מהניטור הבא.',
     'sens_menu': 'לרגישות גבוהה מאוד, גם לדיבור שקט, הקישו 1. לרגישות גבוהה הקישו 2. לרגישות רגילה הקישו 3. '
                  'לרגישות נמוכה, רק לבכי חזק, הקישו 4.',
     'gap_menu': 'להתראה לכל היותר פעם בדקה הקישו 1. פעם בשתי דקות הקישו 2. פעם בחמש דקות הקישו 3. '
@@ -437,6 +441,7 @@ class Call:
             'pay_saved': ('psav', self.on_pay_saved), 'pay_dep_card': ('pdc', self.on_deposit_card),
             'renew_cancel': ('rcx', self.on_renew_cancel), 'set_menu': ('setm', self.on_settings_menu),
             'set_sens': ('sens', self.on_set_sensitivity), 'set_gap': ('sgap', self.on_set_gap),
+            'set_secs': ('ssec', self.on_set_seconds),
             'al_menu': ('alm', self.on_alert_menu), 'rc_wait': ('rcw', self.on_reconnect_wait),
             'rc_done': ('rcd', self.on_reconnect_done), 'stop_pick': ('stp', self.on_stop_pick),
             'al_mode': ('alt', self.on_alert_mode), 'pay_dep': ('pdep', self.on_deposit_pick),
@@ -761,6 +766,8 @@ class Call:
         params.update(self.cfg.get('monitor', {}))
         if sub['noise_threshold']:  # the subscriber's own sensitivity (account menu, key 9)
             params['threshold'] = int(sub['noise_threshold'])
+        if sub['noise_seconds']:  # and how long a noise must last before it alerts
+            params['minDuration'] = float(sub['noise_seconds'])
         cmd.update(params)
         intro = []
         if sub['plan'] == 'prepaid':
@@ -1528,8 +1535,9 @@ class Call:
         threshold = sub['noise_threshold'] or int((self.cfg.get('monitor') or {}).get('threshold', 55))
         gap = sub['alert_gap'] or int(float(self.cfg.get('alert_cooldown', 120)))
         self.save('set_menu')
+        secs = sub['noise_seconds'] or float((self.cfg.get('monitor') or {}).get('minDuration', 2))
         return [ask('setm', [prefix, t(self.cfg, 'settings_menu', level=store.sensitivity_name(threshold),
-                                       gap=store.gap_name(gap))], timeout=8)]
+                                       gap=store.gap_name(gap), secs=store.seconds_name(secs))], timeout=8)]
 
     def on_settings_menu(self, key):
         sub, _, err = self.subscriber(allow_inactive=True)
@@ -1541,7 +1549,21 @@ class Call:
         if key == '2':
             self.save('set_gap')
             return [ask('sgap', [t(self.cfg, 'gap_menu')], timeout=8)]
+        if key == '3':
+            self.save('set_secs')
+            return [ask('ssec', [t(self.cfg, 'secs_menu')], timeout=8)]
         return self.account()
+
+    def on_set_seconds(self, key):
+        sub, _, err = self.subscriber(allow_inactive=True)
+        if err:
+            return err
+        if key not in store.NOISE_SECONDS:
+            return self.settings_menu(sub)
+        value = store.NOISE_SECONDS[key]
+        store.set_monitor_settings(self.con, sub['id'], 'phone', seconds=value)
+        sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
+        return self.settings_menu(sub, t(self.cfg, 'secs_saved', secs=store.seconds_name(value)))
 
     def on_set_sensitivity(self, key):
         sub, _, err = self.subscriber(allow_inactive=True)

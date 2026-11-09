@@ -126,7 +126,8 @@ MIGRATIONS = {
     'subscribers': [('billing', 'TEXT'), ('keva_id', 'TEXT'), ('balance', 'INTEGER'), ('alert_mode', 'TEXT'),
                     ('alert_extra', 'TEXT'), ('alert_backup', 'TEXT'), ('trial_renewed', 'REAL'),
                     ('keva_frozen', 'REAL'), ('card_last', 'TEXT'), ('renew_off', 'REAL'),
-                    ('keva_named', 'TEXT'), ('noise_threshold', 'INTEGER'), ('alert_gap', 'INTEGER')],
+                    ('keva_named', 'TEXT'), ('noise_threshold', 'INTEGER'), ('alert_gap', 'INTEGER'),
+                    ('noise_seconds', 'REAL')],
 }
 
 
@@ -282,6 +283,9 @@ SENSITIVITY = {'1': (40, 'גבוהה מאוד'), '2': (47, 'גבוהה'), '3': (
 ALERT_GAPS = {'1': (60, 'דקה'), '2': (120, 'שתי דקות'), '3': (300, 'חמש דקות'), '4': (600, 'עשר דקות')}
 
 
+NOISE_SECONDS = {'1': 1, '2': 2, '3': 3, '4': 5, '5': 10}  # how long a noise must last to alert (Technoline minDuration)
+
+
 def sensitivity_name(threshold):
     for value, name in SENSITIVITY.values():
         if value == threshold:
@@ -296,12 +300,23 @@ def gap_name(seconds):
     return f'{seconds // 60} דקות'
 
 
-def set_monitor_settings(con, sid, by, threshold=None, gap=None):
+def seconds_name(seconds):
+    s = float(seconds)
+    if s == 1:
+        return 'שנייה אחת'
+    if s == 2:
+        return 'שתי שניות'
+    return f'{s:g} שניות'
+
+
+def set_monitor_settings(con, sid, by, threshold=None, gap=None, seconds=None):
+    if seconds is not None:
+        con.execute('UPDATE subscribers SET noise_seconds=? WHERE id=?', (float(seconds), sid))
     if threshold is not None:
         con.execute('UPDATE subscribers SET noise_threshold=? WHERE id=?', (int(threshold), sid))
     if gap is not None:
         con.execute('UPDATE subscribers SET alert_gap=? WHERE id=?', (int(gap), sid))
-    audit(con, 'monitor_settings', {'id': sid, 'threshold': threshold, 'gap': gap, 'by': by})
+    audit(con, 'monitor_settings', {'id': sid, 'threshold': threshold, 'gap': gap, 'seconds': seconds, 'by': by})
 
 
 def set_renew(con, sid, on, by):

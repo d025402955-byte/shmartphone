@@ -346,9 +346,14 @@ def monitor_settings_form(cfg, s):
     th = {'': f'ברירת מחדל ({store.sensitivity_name(default_th)})',
           **{str(v): f'{n} (סף {v})' for v, n in store.SENSITIVITY.values()}}
     gap = {'': f'ברירת מחדל ({store.gap_name(default_gap)})', **{str(v): n for v, n in store.ALERT_GAPS.values()}}
+    default_secs = float((cfg.get('monitor') or {}).get('minDuration', 2))
+    secs = {'': f'ברירת מחדל ({store.seconds_name(default_secs)})',
+            **{str(v): store.seconds_name(v) for v in store.NOISE_SECONDS.values()}}
+    cur_secs = str(int(s['noise_seconds'])) if s['noise_seconds'] else ''
     return (f'<form class="row" method="post" action="/admin/sub/{s["id"]}/action">{hidden(cfg)}'
             f'<label>רגישות לרעש<select name="noise_threshold">{options(th, str(s["noise_threshold"] or ""))}</select></label>'
             f'<label>התראה לכל היותר פעם ב<select name="alert_gap">{options(gap, str(s["alert_gap"] or ""))}</select></label>'
+            f'<label>התראה על רעש שנמשך<select name="noise_seconds">{options(secs, cur_secs)}</select></label>'
             f'<button class="btn2" name="op" value="monitor_settings">שמירת הגדרות ניטור</button></form>')
 
 
@@ -644,10 +649,12 @@ def handle(cfg, con, method, path, query, headers, body, day):
                     store.update_subscriber(con, sid, status='trial', plan='trial',
                                             expires=default_expiry(cfg, 'trial', day))
                 elif op == 'monitor_settings':
-                    th, gap = f.get('noise_threshold') or '', f.get('alert_gap') or ''
-                    con.execute('UPDATE subscribers SET noise_threshold=?, alert_gap=? WHERE id=?',
-                                (int(th) if th.isdigit() else None, int(gap) if gap.isdigit() else None, sid))
-                    store.audit(con, 'monitor_settings', {'id': sid, 'threshold': th, 'gap': gap, 'by': 'admin'})
+                    th, gap, secs = (f.get(k) or '' for k in ('noise_threshold', 'alert_gap', 'noise_seconds'))
+                    num = lambda v: int(v) if v.isdigit() else None
+                    con.execute('UPDATE subscribers SET noise_threshold=?, alert_gap=?, noise_seconds=? WHERE id=?',
+                                (num(th), num(gap), num(secs), sid))
+                    store.audit(con, 'monitor_settings', {'id': sid, 'threshold': th, 'gap': gap, 'seconds': secs,
+                                                          'by': 'admin'})
                 elif op in ('renew_off', 'renew_on'):
                     store.set_renew(con, sid, op == 'renew_on', 'admin')
                 elif op == 'enable':
