@@ -156,8 +156,7 @@ TEXTS = {
     'ring_saved': 'נשמר: שיחת ההתראה תצלצל {ring} שניות.',
     # sensitivity, key 5: measure the room's noise on this very call and use it as the threshold
     'sens_measure_opt': 'למדידת עוצמת הרעש בחדר וקביעתה כסף ההתראה הקישו 5.',
-    # short on purpose; the noise monitor has no end key, so the measurement simply runs MEASURE_SECONDS
-    'measure_intro': 'השמיעו את הרעש אחרי הצפצוף, במשך 15 שניות.',
+    'measure_intro': 'הקליטו את הרעש אחרי הצפצוף, ובסיום הקישו סולמית.',
     'measure_result': 'עוצמת הרעש הגבוהה שנמדדה: {level}, בסולם של 0 עד 100. הסף שלכם כרגע: {current}. '
                       'לקביעת {level} כסף ההתראה הקישו 1. למדידה חוזרת הקישו 2. לחזרה בלי שינוי הקישו 0.',
     'measure_none': 'לא נמדד רעש. אפשר לנסות שוב, ולהשמיע רעש קרוב יותר לטלפון.',
@@ -454,7 +453,7 @@ class Call:
             'renew_cancel': ('rcx', self.on_renew_cancel), 'set_menu': ('setm', self.on_settings_menu),
             'set_sens': ('sens', self.on_set_sensitivity), 'set_gap': ('sgap', self.on_set_gap),
             'set_secs': ('ssec', self.on_set_seconds), 'set_ring': ('sring', self.on_set_ring),
-            'measuring': ('cal', self.on_measured), 'measured': ('meas', self.on_measure_pick),
+            'measuring': ('calrec', self.on_measured), 'measured': ('meas', self.on_measure_pick),
             'al_menu': ('alm', self.on_alert_menu), 'rc_wait': ('rcw', self.on_reconnect_wait),
             'rc_done': ('rcd', self.on_reconnect_done), 'stop_pick': ('stp', self.on_stop_pick),
             'al_mode': ('alt', self.on_alert_mode), 'pay_dep': ('pdep', self.on_deposit_pick),
@@ -1587,26 +1586,28 @@ class Call:
         sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
         return self.settings_menu(sub, t(self.cfg, 'ring_saved', ring=store.RING_LENGTHS[key]))
 
-    # measuring the room: a short noise monitor on this call that reports levels and raises no alert
-    MEASURE_SECONDS = 16
-
+    # measuring the room: the caller records the noise, ending with '#'; the server measures the loudest moment
+    # on Technoline's noise scale (core.measure_level)
     def measure(self, sub):
-        room = f"cal-{sub['id']}-{re.sub(r'[^A-Za-z0-9]', '', self.call_id)[-12:]}"
         self.data['cal_max'] = None
-        self.save('measuring', room_id=room)
-        cmd = {'type': 'noiseMonitor', 'name': 'cal', 'roomId': room, 'threshold': 99, 'minDuration': 60,
-               'levelReport': 5, 'maxDuration': self.MEASURE_SECONDS, 'maxListeners': 1, 'joinBeep': 'no',
-               'alertUrl': self.cfg['public_url'].rstrip('/') + '/events/' + self.cfg['event_token']}
-        beep = beep_file(self.cfg) if self.cfg.get('start_beep', True) else None
-        return [say(t(self.cfg, 'measure_intro'), beep), cmd]
+        self.save('measuring')
+        folder = self.cfg.get('messages_folder')
+        return [{'type': 'record', 'name': 'calrec', 'max': 10, 'min': 1, 'confirm': 'no',
+                 'fileName': 'cal_' + re.sub(r'[^A-Za-z0-9_-]', '', self.call_id)[-40:],
+                 **({'saveFolder': str(folder)} if folder else {}),
+                 'files': [{'text': t(self.cfg, 'measure_intro')}]}]
 
-    def on_measured(self, _status):
+    def on_measured(self, _value):
         sub, _, err = self.subscriber(allow_inactive=True)
         if err:
             return err
-        self.sess = self.con.execute('SELECT * FROM sessions WHERE call_id=?', (self.call_id,)).fetchone()
-        data = json.loads(self.sess['data'] or '{}')  # the level events were written while we waited
-        level = data.get('cal_max')
+        level = None
+        if self.p.get('FILEID_calrec'):
+            import core
+            try:
+                level = core.measure_level(core.fetch_recording(self.cfg, self.p['FILEID_calrec']))
+            except Exception as e:
+                print('MEASURE_ERROR', repr(e)[:200], flush=True)
         self.data['cal_max'] = level
         if not level:
             self.save('set_sens')

@@ -931,24 +931,32 @@ class PaymentTests(Base):
         r = self.go('account', setm='1')
         self.assertIn('הקישו 5', ' '.join(f['text'] for f in r[0]['files']))
         r = self.go('account', sens='5')
-        nm = r[-1]
-        self.assertEqual((nm['type'], nm['levelReport'], nm['threshold']), ('noiseMonitor', 5, 99))
-        self.assertIn('15 שניות', spoken(r[0]))
-        now = time.time()
-        for lvl in (31, 52, 44):  # level reports while the parent talks next to the phone
-            ev = {'event': 'level', 'time': now, 'roomId': nm['roomId'], 'callId': 'p1', 'num': PBX,
-                  'maxLevel': lvl, 'avgLevel': lvl - 10}
-            with self.con:
-                self.assertEqual(core.handle_event(self.cfg, self.con, ev, 'level', now=now), (200, 'ok'))
-        with self.con:  # a monitorStart of the measurement is not a monitoring session
-            core.handle_event(self.cfg, self.con, {'event': 'monitorStart', 'time': now, 'roomId': nm['roomId'],
-                                                   'callId': 'p1', 'num': PBX}, 'monitorStart', now=now)
-        self.assertIsNone(self.con.execute("SELECT mon_start FROM sessions WHERE call_id='p1'").fetchone()[0])
-        r = self.go('account', cal='TIMEOUT')
+        rec = r[-1]
+        self.assertEqual((rec['type'], rec['name'], rec['confirm'], rec['max']), ('record', 'calrec', 'no', 10))
+        self.assertIn('ובסיום הקישו סולמית', rec['files'][0]['text'])
+        orig = (core.fetch_recording, core.measure_level)
+        core.fetch_recording = lambda cfg, fid: b'AUDIO-' + fid.encode()
+        core.measure_level = lambda audio: 52 if audio == b'AUDIO-f1' else None
+        try:
+            r = self.go('account', calrec='cal_x', FILEID_calrec='f1')
+        finally:
+            core.fetch_recording, core.measure_level = orig
         self.assertIn('עוצמת הרעש הגבוהה שנמדדה: 52', r[0]['files'][0]['text'])
         r = self.go('account', meas='1')
         self.assertIn('בעוצמה 52 ומעלה', ' '.join(f.get('text', '') for f in r[0]['files']))
         self.assertEqual(self.sub()['noise_threshold'], 52)
+
+    def test_measure_level_on_technoline_scale(self):
+        import shutil
+        import subprocess
+        if not shutil.which('ffmpeg'):
+            self.skipTest('ffmpeg not installed')
+        wav = lambda amp: subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i',
+                                          f'sine=frequency=440:duration=1,volume={amp}', '-ar', '8000', '-f', 'wav',
+                                          'pipe:1'], capture_output=True).stdout
+        loud, quiet = core.measure_level(wav(1.0)), core.measure_level(wav(0.05))
+        self.assertGreater(loud, quiet)  # a quieter sound measures lower on the same scale
+        self.assertTrue(0 <= quiet < loud <= 100)
 
     def test_subscriber_sets_alert_ring_length(self):
         with self.con:

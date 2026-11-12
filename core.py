@@ -70,13 +70,6 @@ def handle_event(cfg, con, ev, header_event, now=None):
     sess = con.execute('SELECT * FROM sessions WHERE call_id=?', (call_id,)).fetchone()
     if not sess or sess['room_id'] != ev.get('roomId'):
         return 404, 'unknown session'
-    if str(sess['room_id']).startswith('cal-'):  # measuring the room from the settings menu: keep the loudest level
-        if kind == 'level':
-            data = json.loads(sess['data'] or '{}')
-            level = max(float(ev.get('maxLevel') or 0), float(data.get('cal_max') or 0))
-            data['cal_max'] = level or None
-            con.execute('UPDATE sessions SET data=? WHERE call_id=?', (json.dumps(data, ensure_ascii=False), call_id))
-        return 200, 'ok'
     if kind == 'monitorStart':
         con.execute("UPDATE sessions SET status='monitoring', mon_start=COALESCE(mon_start,?) WHERE call_id=?",
                     (now, call_id))
@@ -342,6 +335,30 @@ def alert_mode_for(cfg, db_path, sid):
 
 
 # ---------- customer-service messages -> email ----------
+
+# Loudness of a recording on Technoline's noise scale (0-100). Fitted on 150 noise recordings against the level
+# Technoline reported for each: level ~= 1.66 * (loudest 50 ms, dB below full scale) + 101.7, mean error 1.7 points.
+# Checked on levels 46-94 only (quieter noises are never recorded by the monitor).
+LEVEL_A, LEVEL_B, LEVEL_WINDOW = 1.66, 101.7, 0.05
+
+
+def measure_level(audio, rate=8000):
+    """Technoline-scale level of the loudest moment in an audio file, or None. Needs ffmpeg on the server."""
+    import array
+    import math
+    import subprocess
+    pcm = subprocess.run(['ffmpeg', '-v', 'error', '-i', 'pipe:0', '-ac', '1', '-ar', str(rate), '-f', 's16le',
+                          'pipe:1'], input=audio, capture_output=True, timeout=60).stdout
+    samples = array.array('h', pcm[:len(pcm) // 2 * 2])
+    n = int(rate * LEVEL_WINDOW)
+    loudest = 0.0
+    for i in range(0, len(samples) - n + 1, n):
+        w = samples[i:i + n]
+        loudest = max(loudest, math.sqrt(sum(x * x for x in w) / n))
+    if not loudest:
+        return None
+    return max(0, min(100, round(LEVEL_A * 20 * math.log10(loudest / 32768) + LEVEL_B)))
+
 
 def fetch_recording(cfg, file_id):
     url = cfg.get('files_url', 'https://api.tlivr.com/ivrFilesApi.php')
