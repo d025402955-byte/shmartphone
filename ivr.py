@@ -156,8 +156,8 @@ TEXTS = {
     'ring_saved': 'נשמר: שיחת ההתראה תצלצל {ring} שניות.',
     # sensitivity, key 5: measure the room's noise on this very call and use it as the threshold
     'sens_measure_opt': 'למדידת עוצמת הרעש בחדר וקביעתה כסף ההתראה הקישו 5.',
-    'measure_intro': 'מדידת רעש. התקשרו מהטלפון שיישאר בחדר, והניחו אותו במקומו. '
-                     'אחרי הצפצוף, השמיעו במשך 15 שניות את הרעש שתרצו שיפעיל התראה, למשל דיבור או בכי.',
+    # short on purpose; the noise monitor has no end key, so the measurement simply runs MEASURE_SECONDS
+    'measure_intro': 'השמיעו את הרעש אחרי הצפצוף, במשך 15 שניות.',
     'measure_result': 'עוצמת הרעש הגבוהה שנמדדה: {level}, בסולם של 0 עד 100. הסף שלכם כרגע: {current}. '
                       'לקביעת {level} כסף ההתראה הקישו 1. למדידה חוזרת הקישו 2. לחזרה בלי שינוי הקישו 0.',
     'measure_none': 'לא נמדד רעש. אפשר לנסות שוב, ולהשמיע רעש קרוב יותר לטלפון.',
@@ -506,11 +506,14 @@ class Call:
             gap = int(float(self.cfg.get('alert_cooldown', 120)) // 60)
             intro = [t(self.cfg, 'menu_welcome'), t(self.cfg, 'menu_promo'),
                      t(self.cfg, 'menu_alerts_note', gap={1: 'דקה', 2: 'שתי דקות'}.get(gap, f'{gap} דקות'))]
+        # The intro is part of the menu itself, so a key pressed while it plays is taken at once. It plays once
+        # (times=1); with no key the menu then repeats without it (see on_menu).
+        self.data['intro_pending'] = bool(intro)
         self.save('menu')
         files = [{'text': x} for x in ([prefix] if isinstance(prefix, str) else (prefix or [])) if x]
-        menu = {'type': 'simpleMenu', 'name': 'menu', 'enabledKeys': ','.join(MENU_KEYS), 'times': 3,
-                'timeout': 7, 'errorReturn': 'ERROR', 'files': files + [{'text': t(self.cfg, 'menu')}]}
-        return [say(*intro), menu] if intro else [menu]
+        files += [{'text': x} for x in intro] + [{'text': t(self.cfg, 'menu')}]
+        return [{'type': 'simpleMenu', 'name': 'menu', 'enabledKeys': ','.join(MENU_KEYS), 'times': 1 if intro else 3,
+                 'timeout': 7, 'errorReturn': 'ERROR', 'files': files}]
 
     # ----- 2: listen / noise history / stop alerts -----
     def parent_menu(self):
@@ -615,6 +618,8 @@ class Call:
 
     def on_menu(self, key):
         mode = MENU_KEYS.get(key)
+        if not mode and self.data.get('intro_pending'):  # no key during the intro: the menu alone, repeated
+            return self.menu(notices=False)
         if not mode:  # no key after the menu was repeated: end the call
             self.end_call = True
             return hangup(self.cfg, t(self.cfg, 'goodbye'))

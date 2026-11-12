@@ -160,15 +160,24 @@ class IvrTests(Base):
         p = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'w1', 'PBXcallStatus': 'CALL'}
         with self.con:
             r = ivr.handle(self.cfg, self.con, dict(p), DAY, 'menu')[0]
-        self.assertEqual(r[0]['type'], 'simpleMessage')
+        self.assertEqual(len(r), 1)  # the intro is inside the menu: a key works while it plays
+        self.assertEqual((r[0]['type'], r[0]['times']), ('simpleMenu', 1))
         intro = spoken(r[0])
         self.assertIn('שבוע ראשון', intro)
         self.assertIn('חינם', intro)
         self.assertIn('לכל היותר פעם בשתי דקות', intro)
-        self.assertEqual(r[-1]['type'], 'simpleMenu')
-        with self.con:  # back to the menu in the same call: no intro again
+        self.assertIn('הקישו 1', intro)
+        with self.con:  # no key during the intro: the menu alone, repeated
             r = ivr.handle(self.cfg, self.con, {**p, 'menu': 'ERROR'}, DAY, 'menu')[0]
-        self.assertNotIn('חינם', ' '.join(spoken(x) for x in r if x.get('files')))
+        self.assertEqual((r[0]['type'], r[0]['times']), ('simpleMenu', 3))
+        self.assertNotIn('חינם', spoken(r[0]))
+        with self.con:  # still no key: goodbye
+            r = ivr.handle(self.cfg, self.con, {**p, 'menu': 'ERROR'}, DAY, 'menu')[0]
+        self.assertEqual(r[-1]['type'], 'hangup')
+        with self.con:  # a key pressed during the intro is taken
+            r = ivr.handle(self.cfg, self.con, {**p, 'PBXcallId': 'w2'}, DAY, 'menu')[0]
+            r = ivr.handle(self.cfg, self.con, {**p, 'PBXcallId': 'w2', 'menu': '3'}, DAY, 'menu')[0]
+        self.assertIn('שְׁמַרְטַפוֹן הוא שירות', ' '.join(spoken(x) for x in r if x.get('files')))
 
     def test_disabled_rejected_and_no_auto_trial(self):
         sid = self.sub_with(status='disabled')
