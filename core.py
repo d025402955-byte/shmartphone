@@ -70,6 +70,13 @@ def handle_event(cfg, con, ev, header_event, now=None):
     sess = con.execute('SELECT * FROM sessions WHERE call_id=?', (call_id,)).fetchone()
     if not sess or sess['room_id'] != ev.get('roomId'):
         return 404, 'unknown session'
+    if str(sess['room_id']).startswith('cal-'):  # measuring the room from the settings menu: keep the loudest level
+        if kind == 'level':
+            data = json.loads(sess['data'] or '{}')
+            level = max(float(ev.get('maxLevel') or 0), float(data.get('cal_max') or 0))
+            data['cal_max'] = level or None
+            con.execute('UPDATE sessions SET data=? WHERE call_id=?', (json.dumps(data, ensure_ascii=False), call_id))
+        return 200, 'ok'
     if kind == 'monitorStart':
         con.execute("UPDATE sessions SET status='monitoring', mon_start=COALESCE(mon_start,?) WHERE call_id=?",
                     (now, call_id))
@@ -275,6 +282,8 @@ def process_one(cfg, db_path, sender=send_alert, log=print):
     else:
         payload = json.loads(row['payload']) if row['payload'] else {}
         mode = alert_mode_for(cfg, db_path, row['subscriber_id'])
+        ring = ring_for(db_path, row['subscriber_id']) if row['kind'] in ALERT_KINDS else None
+        cfg = {**cfg, 'call_length': ring} if ring else cfg  # the subscriber's own ring length for this alert
         try:
             if payload.get('text') and row['kind'] != 'reconnect':
                 state, result = sender(cfg, row['kind'], row['alert_phone'], payload['text'])
@@ -301,6 +310,18 @@ def process_one(cfg, db_path, sender=send_alert, log=print):
             store.charge_alert(con, row['subscriber_id'], result.get('billing'), row['id'])
     con.close()
     return True
+
+
+def ring_for(db_path, sid):
+    """Seconds this subscriber wants an alert call to ring (account menu, key 9), or None for the default."""
+    if not sid:
+        return None
+    con = store.connect(db_path)
+    try:
+        row = con.execute('SELECT ring_seconds FROM subscribers WHERE id=?', (sid,)).fetchone()
+    finally:
+        con.close()
+    return max(6, min(30, int(row[0]))) if row and row[0] else None
 
 
 def alert_mode_for(cfg, db_path, sid):

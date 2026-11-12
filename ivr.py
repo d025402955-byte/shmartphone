@@ -146,10 +146,22 @@ TEXTS = {
     'balance_reconnects': 'היתרה מספיקה לכ-{n} חיוגים חוזרים לטלפון שבחדר.',
     'balance_load': 'לטעינת פיקדון הקישו 5, ואחר כך 3.',
     'account_alerts': 'לבחירת סוג ההתראות הקישו 6.',
-    'account_settings_opt': 'להגדרת רגישות לרעש, משך הרעש וזמן בין ההתראות הקישו 9.',
+    'account_settings_opt': 'להגדרות הניטור וההתראות הקישו 9.',
     'settings_menu': 'רגישות לרעש כרגע: {level}. התראה נשלחת על רעש שנמשך {secs}. התראה לכל היותר פעם ב{gap}. '
-                     'לשינוי הרגישות הקישו 1. לשינוי הזמן בין ההתראות הקישו 2. '
-                     'לשינוי משך הרעש שמפעיל התראה הקישו 3. לחזרה הקישו 0.',
+                     'שיחת ההתראה מצלצלת {ring} שניות. '
+                     'לשינוי הרגישות או למדידת הרעש בחדר הקישו 1. לשינוי הזמן בין ההתראות הקישו 2. '
+                     'לשינוי משך הרעש שמפעיל התראה הקישו 3. לשינוי אורך הצלצול של ההתראה הקישו 4. לחזרה הקישו 0.',
+    'ring_menu': 'כמה זמן תצלצל שיחת ההתראה: 10 שניות הקישו 1. 15 שניות הקישו 2. 20 שניות הקישו 3. '
+                 '25 שניות הקישו 4. 30 שניות הקישו 5.',
+    'ring_saved': 'נשמר: שיחת ההתראה תצלצל {ring} שניות.',
+    # sensitivity, key 5: measure the room's noise on this very call and use it as the threshold
+    'sens_measure_opt': 'למדידת עוצמת הרעש בחדר וקביעתה כסף ההתראה הקישו 5.',
+    'measure_intro': 'מדידת רעש. התקשרו מהטלפון שיישאר בחדר, והניחו אותו במקומו. '
+                     'אחרי הצפצוף, השמיעו במשך 15 שניות את הרעש שתרצו שיפעיל התראה, למשל דיבור או בכי.',
+    'measure_result': 'עוצמת הרעש הגבוהה שנמדדה: {level}, בסולם של 0 עד 100. הסף שלכם כרגע: {current}. '
+                      'לקביעת {level} כסף ההתראה הקישו 1. למדידה חוזרת הקישו 2. לחזרה בלי שינוי הקישו 0.',
+    'measure_none': 'לא נמדד רעש. אפשר לנסות שוב, ולהשמיע רעש קרוב יותר לטלפון.',
+    'measure_saved': 'נשמר: התראה על רעש בעוצמה {level} ומעלה. השינוי יחול מהניטור הבא.',
     'secs_menu': 'התראה על רעש שנמשך שנייה אחת הקישו 1. שתי שניות הקישו 2. שלוש שניות הקישו 3. '
                  'חמש שניות הקישו 4. עשר שניות הקישו 5.',
     'secs_saved': 'נשמר: התראה על רעש שנמשך {secs}. השינוי יחול מהניטור הבא.',
@@ -441,7 +453,8 @@ class Call:
             'pay_saved': ('psav', self.on_pay_saved), 'pay_dep_card': ('pdc', self.on_deposit_card),
             'renew_cancel': ('rcx', self.on_renew_cancel), 'set_menu': ('setm', self.on_settings_menu),
             'set_sens': ('sens', self.on_set_sensitivity), 'set_gap': ('sgap', self.on_set_gap),
-            'set_secs': ('ssec', self.on_set_seconds),
+            'set_secs': ('ssec', self.on_set_seconds), 'set_ring': ('sring', self.on_set_ring),
+            'measuring': ('cal', self.on_measured), 'measured': ('meas', self.on_measure_pick),
             'al_menu': ('alm', self.on_alert_menu), 'rc_wait': ('rcw', self.on_reconnect_wait),
             'rc_done': ('rcd', self.on_reconnect_done), 'stop_pick': ('stp', self.on_stop_pick),
             'al_mode': ('alt', self.on_alert_mode), 'pay_dep': ('pdep', self.on_deposit_pick),
@@ -1536,8 +1549,10 @@ class Call:
         gap = sub['alert_gap'] or int(float(self.cfg.get('alert_cooldown', 120)))
         self.save('set_menu')
         secs = sub['noise_seconds'] or float((self.cfg.get('monitor') or {}).get('minDuration', 2))
+        ring = sub['ring_seconds'] or int(self.cfg.get('call_length', 25))
         return [ask('setm', [prefix, t(self.cfg, 'settings_menu', level=store.sensitivity_name(threshold),
-                                       gap=store.gap_name(gap), secs=store.seconds_name(secs))], timeout=8)]
+                                       gap=store.gap_name(gap), secs=store.seconds_name(secs), ring=ring)],
+                    timeout=8)]
 
     def on_settings_menu(self, key):
         sub, _, err = self.subscriber(allow_inactive=True)
@@ -1545,14 +1560,70 @@ class Call:
             return err
         if key == '1':
             self.save('set_sens')
-            return [ask('sens', [t(self.cfg, 'sens_menu')], timeout=8)]
+            return [ask('sens', [t(self.cfg, 'sens_menu'), t(self.cfg, 'sens_measure_opt')], timeout=8)]
         if key == '2':
             self.save('set_gap')
             return [ask('sgap', [t(self.cfg, 'gap_menu')], timeout=8)]
         if key == '3':
             self.save('set_secs')
             return [ask('ssec', [t(self.cfg, 'secs_menu')], timeout=8)]
+        if key == '4':
+            self.save('set_ring')
+            return [ask('sring', [t(self.cfg, 'ring_menu')], timeout=8)]
         return self.account()
+
+    def on_set_ring(self, key):
+        sub, _, err = self.subscriber(allow_inactive=True)
+        if err:
+            return err
+        if key not in store.RING_LENGTHS:
+            return self.settings_menu(sub)
+        store.set_monitor_settings(self.con, sub['id'], 'phone', ring=store.RING_LENGTHS[key])
+        sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
+        return self.settings_menu(sub, t(self.cfg, 'ring_saved', ring=store.RING_LENGTHS[key]))
+
+    # measuring the room: a short noise monitor on this call that reports levels and raises no alert
+    MEASURE_SECONDS = 16
+
+    def measure(self, sub):
+        room = f"cal-{sub['id']}-{re.sub(r'[^A-Za-z0-9]', '', self.call_id)[-12:]}"
+        self.data['cal_max'] = None
+        self.save('measuring', room_id=room)
+        cmd = {'type': 'noiseMonitor', 'name': 'cal', 'roomId': room, 'threshold': 99, 'minDuration': 60,
+               'levelReport': 5, 'maxDuration': self.MEASURE_SECONDS, 'maxListeners': 1, 'joinBeep': 'no',
+               'alertUrl': self.cfg['public_url'].rstrip('/') + '/events/' + self.cfg['event_token']}
+        beep = beep_file(self.cfg) if self.cfg.get('start_beep', True) else None
+        return [say(t(self.cfg, 'measure_intro'), beep), cmd]
+
+    def on_measured(self, _status):
+        sub, _, err = self.subscriber(allow_inactive=True)
+        if err:
+            return err
+        self.sess = self.con.execute('SELECT * FROM sessions WHERE call_id=?', (self.call_id,)).fetchone()
+        data = json.loads(self.sess['data'] or '{}')  # the level events were written while we waited
+        level = data.get('cal_max')
+        self.data['cal_max'] = level
+        if not level:
+            self.save('set_sens')
+            return [ask('sens', [t(self.cfg, 'measure_none'), t(self.cfg, 'sens_menu'),
+                                 t(self.cfg, 'sens_measure_opt')], timeout=8)]
+        current = sub['noise_threshold'] or int((self.cfg.get('monitor') or {}).get('threshold', 55))
+        self.save('measured')
+        return [ask('meas', [t(self.cfg, 'measure_result', level=int(level), current=current)], timeout=8)]
+
+    def on_measure_pick(self, key):
+        sub, _, err = self.subscriber(allow_inactive=True)
+        if err:
+            return err
+        level = self.data.get('cal_max')
+        if key == '2':
+            return self.measure(sub)
+        if key == '1' and level:
+            value = max(10, min(95, int(level)))
+            store.set_monitor_settings(self.con, sub['id'], 'phone', threshold=value)
+            sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
+            return self.settings_menu(sub, t(self.cfg, 'measure_saved', level=value))
+        return self.settings_menu(sub)
 
     def on_set_seconds(self, key):
         sub, _, err = self.subscriber(allow_inactive=True)
@@ -1569,6 +1640,8 @@ class Call:
         sub, _, err = self.subscriber(allow_inactive=True)
         if err:
             return err
+        if key == '5':
+            return self.measure(sub)
         if key not in store.SENSITIVITY:
             return self.settings_menu(sub)
         value, name = store.SENSITIVITY[key]

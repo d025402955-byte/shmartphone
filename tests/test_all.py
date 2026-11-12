@@ -913,6 +913,55 @@ class PaymentTests(Base):
         out = admin.sub_page(self.cfg, self.con, self.sub()['id'])
         self.assertIn('התראה על רעש שנמשך', out)
 
+    def test_measure_room_noise_and_use_it_as_threshold(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='annual', status='active',
+                                          expires='2027-11-10')
+        self.go('account')
+        self.go('account', acm='9')
+        r = self.go('account', setm='1')
+        self.assertIn('הקישו 5', ' '.join(f['text'] for f in r[0]['files']))
+        r = self.go('account', sens='5')
+        nm = r[-1]
+        self.assertEqual((nm['type'], nm['levelReport'], nm['threshold']), ('noiseMonitor', 5, 99))
+        self.assertIn('15 שניות', spoken(r[0]))
+        now = time.time()
+        for lvl in (31, 52, 44):  # level reports while the parent talks next to the phone
+            ev = {'event': 'level', 'time': now, 'roomId': nm['roomId'], 'callId': 'p1', 'num': PBX,
+                  'maxLevel': lvl, 'avgLevel': lvl - 10}
+            with self.con:
+                self.assertEqual(core.handle_event(self.cfg, self.con, ev, 'level', now=now), (200, 'ok'))
+        with self.con:  # a monitorStart of the measurement is not a monitoring session
+            core.handle_event(self.cfg, self.con, {'event': 'monitorStart', 'time': now, 'roomId': nm['roomId'],
+                                                   'callId': 'p1', 'num': PBX}, 'monitorStart', now=now)
+        self.assertIsNone(self.con.execute("SELECT mon_start FROM sessions WHERE call_id='p1'").fetchone()[0])
+        r = self.go('account', cal='TIMEOUT')
+        self.assertIn('עוצמת הרעש הגבוהה שנמדדה: 52', r[0]['files'][0]['text'])
+        r = self.go('account', meas='1')
+        self.assertIn('בעוצמה 52 ומעלה', ' '.join(f.get('text', '') for f in r[0]['files']))
+        self.assertEqual(self.sub()['noise_threshold'], 52)
+
+    def test_subscriber_sets_alert_ring_length(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='annual', status='active',
+                                          expires='2027-11-10')
+        self.go('account')
+        self.go('account', acm='9')
+        r = self.go('account', setm='4')
+        self.assertEqual(r[0]['name'], 'sring')
+        r = self.go('account', sring='5')
+        self.assertIn('תצלצל 30 שניות', ' '.join(f.get('text', '') for f in r[0]['files']))
+        self.assertEqual(self.sub()['ring_seconds'], 30)
+        with self.con:  # the alert call uses it; verification calls keep the default
+            for kind in ('noise', 'verify'):
+                self.con.execute("INSERT INTO alerts(subscriber_id,kind,alert_phone,created,state) VALUES(?,?,?,?,'pending')",
+                                 (sid, kind, '0501112222', time.time()))
+        seen = []
+        sender = lambda cfg, kind, phone, *a, **k: seen.append((kind, cfg.get('call_length'))) or ('sent', {})
+        while core.process_one({**self.cfg, 'call_length': 25}, self.db, sender=sender, log=lambda *a, **k: None):
+            pass
+        self.assertEqual(sorted(seen), [('noise', 30), ('verify', 25)])
+
     def test_any_paid_subscriber_can_cancel(self):
         self.cfg['payments'].update({'manual_keva': True, 'auto_renew': True})
         with self.con:  # an annual subscriber with no saved card (e.g. imported)

@@ -127,7 +127,7 @@ MIGRATIONS = {
                     ('alert_extra', 'TEXT'), ('alert_backup', 'TEXT'), ('trial_renewed', 'REAL'),
                     ('keva_frozen', 'REAL'), ('card_last', 'TEXT'), ('renew_off', 'REAL'),
                     ('keva_named', 'TEXT'), ('noise_threshold', 'INTEGER'), ('alert_gap', 'INTEGER'),
-                    ('noise_seconds', 'REAL')],
+                    ('noise_seconds', 'REAL'), ('ring_seconds', 'INTEGER')],
 }
 
 
@@ -283,6 +283,7 @@ SENSITIVITY = {'1': (40, 'גבוהה מאוד'), '2': (47, 'גבוהה'), '3': (
 ALERT_GAPS = {'1': (60, 'דקה'), '2': (120, 'שתי דקות'), '3': (300, 'חמש דקות'), '4': (600, 'עשר דקות')}
 
 
+RING_LENGTHS = {'1': 10, '2': 15, '3': 20, '4': 25, '5': 30}  # seconds an alert call rings (Technoline: 6-30)
 NOISE_SECONDS = {'1': 1, '2': 2, '3': 3, '4': 5, '5': 10}  # how long a noise must last to alert (Technoline minDuration)
 
 
@@ -309,14 +310,17 @@ def seconds_name(seconds):
     return f'{s:g} שניות'
 
 
-def set_monitor_settings(con, sid, by, threshold=None, gap=None, seconds=None):
+def set_monitor_settings(con, sid, by, threshold=None, gap=None, seconds=None, ring=None):
+    if ring is not None:
+        con.execute('UPDATE subscribers SET ring_seconds=? WHERE id=?', (int(ring), sid))
     if seconds is not None:
         con.execute('UPDATE subscribers SET noise_seconds=? WHERE id=?', (float(seconds), sid))
     if threshold is not None:
         con.execute('UPDATE subscribers SET noise_threshold=? WHERE id=?', (int(threshold), sid))
     if gap is not None:
         con.execute('UPDATE subscribers SET alert_gap=? WHERE id=?', (int(gap), sid))
-    audit(con, 'monitor_settings', {'id': sid, 'threshold': threshold, 'gap': gap, 'seconds': seconds, 'by': by})
+    audit(con, 'monitor_settings', {'id': sid, 'threshold': threshold, 'gap': gap, 'seconds': seconds, 'ring': ring,
+                                    'by': by})
 
 
 def set_renew(con, sid, on, by):
