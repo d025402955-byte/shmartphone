@@ -351,7 +351,8 @@ def record_payment(con, sid, *, source, months, amount, confirm=None, transactio
         # The phone result sometimes comes without CONFIRM_payment (seen with standing orders): the Nedarim
         # charge is then matched to that phone payment by subscriber, amount and date, never extended twice.
         day_ts = time.mktime(day.timetuple())
-        row = con.execute("SELECT * FROM payments WHERE subscriber_id=? AND source='phone' AND transaction_id IS NULL "
+        row = con.execute("SELECT * FROM payments WHERE subscriber_id=? AND source='phone' AND plan!='deposit' "
+                          "AND transaction_id IS NULL "
                           "AND COALESCE(confirm,'')='' AND ABS(amount-?)<0.01 AND created BETWEEN ? AND ? "
                           "ORDER BY id LIMIT 1", (sid, amount, day_ts - 2 * 86400, day_ts + 3 * 86400)).fetchone()
         if row:
@@ -390,6 +391,19 @@ def add_credit(con, sid, agorot, *, source, amount, confirm=None, transaction_id
         if row:
             con.execute('UPDATE payments SET transaction_id=COALESCE(transaction_id,?) WHERE id=?',
                         (transaction_id, row['id']))
+            return None
+    if source == 'nedarim':
+        # The phone result may come without CONFIRM_payment (a one-payment standing order does that): the
+        # Nedarim charge is then this phone deposit, matched by subscriber, amount and time, never credited twice.
+        now = time.time()
+        row = con.execute("SELECT * FROM payments WHERE subscriber_id=? AND source='phone' AND plan='deposit' "
+                          "AND transaction_id IS NULL AND COALESCE(confirm,'')='' AND ABS(amount-?)<0.01 "
+                          "AND created BETWEEN ? AND ? ORDER BY id LIMIT 1",
+                          (sid, amount, now - 3 * 86400, now + 3600)).fetchone()
+        if row:
+            con.execute('UPDATE payments SET confirm=?, transaction_id=? WHERE id=?',
+                        (confirm, transaction_id, row['id']))
+            audit(con, 'payment_linked', {'id': sid, 'payment': row['id'], 'transaction': transaction_id})
             return None
     sub = con.execute('SELECT * FROM subscribers WHERE id=?', (sid,)).fetchone()
     keep_plan = sub['plan'] in ('monthly', 'annual', 'free') and authorization(sub, datetime.date.today())[0]

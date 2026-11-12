@@ -886,6 +886,18 @@ class PaymentTests(Base):
         out = admin.sub_page(self.cfg, self.con, sid)
         self.assertIn('שמירת הגדרות ניטור', out)
 
+    def test_phone_deposit_without_confirm_is_not_credited_twice_by_sync(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='prepaid', status='active')
+            store.add_credit(self.con, sid, 2000, source='phone', amount=20.0, confirm=None)  # no CONFIRM_payment
+        rows = [{'TransactionId': '82509025', 'Amount': '20', 'Confirmation': '0408831',
+                 'Groupe': f'שמרטפון פיקדון {sid}', 'KevaId': '', 'TransactionTime': '23/10/2026 18:24'}]
+        with self.con:
+            self.assertEqual(nedarim.apply_transactions(self.cfg, self.con, rows, log=lambda *a, **k: None)[1], 0)
+        self.assertEqual(store.balance(self.sub()), 2000)
+        p = self.con.execute('SELECT * FROM payments WHERE subscriber_id=?', (sid,)).fetchall()
+        self.assertEqual([(x['transaction_id'], x['confirm']) for x in p], [('82509025', '0408831')])
+
     def test_subscriber_sets_noise_duration(self):
         with self.con:
             store.create_subscriber(self.con, main_phone='0521234567', plan='annual', status='active',
