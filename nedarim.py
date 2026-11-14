@@ -137,7 +137,7 @@ def name_keva(cfg, keva_id, name, phone, groupe):
 
 def retag_transaction(cfg, transaction_id, groupe):
     r = _call(cfg, 'UpdateRagil', TransactionId=transaction_id, Groupe=groupe)
-    if not isinstance(r, dict) or r.get('Result') != 'OK':
+    if r != 'OK' and (not isinstance(r, dict) or r.get('Result') != 'OK'):  # it answers a bare 'OK' on success
         raise RuntimeError('nedarim UpdateRagil: ' + str(r.get('Message') if isinstance(r, dict) else r)[:200])
 
 
