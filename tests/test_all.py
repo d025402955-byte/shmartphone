@@ -735,6 +735,26 @@ class PaymentTests(Base):
             self.assertEqual(nedarim.apply_transactions(self.cfg, self.con, rows, log=lambda *a, **k: None)[1], 0)
         self.assertEqual(self.sub()['expires'], '2026-11-23')
 
+    def test_auto_renewal_at_the_new_price_says_so_in_the_reminder(self):
+        import renew
+        self.cfg['payments'].update({'manual_keva': True, 'auto_renew': True, 'monthly': 10, 'annual': 100})
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='monthly', status='active',
+                                          expires='2026-11-10', amount=8.9)  # paid the old price
+            store.set_keva(self.con, sid, '777')
+            self.con.execute("UPDATE subscribers SET keva_frozen=1, card_last='1234' WHERE id=?", (sid,))
+        charges = []
+        charge = lambda c, k, amount, g, a: charges.append(amount) or {'Status': 'OK', 'TransactionId': '902'}
+        at = lambda d: time.mktime((2026, 11, d, 12, 0, 0, 0, 0, -1))
+        renew.run(self.cfg, self.db, charge, now=at(9), log=lambda *a, **k: None)
+        text = json.loads(self.con.execute("SELECT payload FROM alerts WHERE kind='renew_notice'").fetchone()[0])['text']
+        self.assertIn('מחיר המנוי עודכן, מ-8.9 שקלים ל-10 שקלים', text)
+        self.assertIn('מחר יחודש המנוי שלכם ב-10 שקלים', text)
+        renew.run(self.cfg, self.db, charge, now=at(10), log=lambda *a, **k: None)
+        self.assertEqual(charges, [10.0])
+        self.assertEqual(self.sub()['amount'], 10.0)  # the next reminder will not mention a change again
+        self.assertNotIn('עודכן', renew.reminder_text(self.sub(), 10.0))
+
     def test_auto_renewal_reminds_the_day_before_then_charges_once(self):
         import renew
         self.cfg['payments'].update({'manual_keva': True, 'auto_renew': True})

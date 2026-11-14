@@ -14,6 +14,7 @@ import store
 REMINDER = ('שלום, כאן שְׁמַרְטַפוֹן. מחר יחודש המנוי שלכם ב-{amount} שקלים, מהכרטיס שמסתיים בספרות {last}. '
             'אם אינכם רוצים להמשיך, אפשר לבטל את החידוש עד מחר: התקשרו לשְׁמַרְטַפוֹן, '
             'הקישו 4 לניהול המנוי, ואז 8. תודה.')
+PRICE_NOTE = 'שימו לב: מחיר המנוי עודכן, מ-{old} שקלים ל-{amount} שקלים. '
 LATE_DAYS = 3  # a renewal missed by more than this (e.g. the server was down) is not charged: the subscriber pays
 
 
@@ -29,6 +30,16 @@ def _due(con, day):
 def amount_for(cfg, sub):
     p = cfg.get('payments') or {}
     return float(p.get('annual', 82)) if sub['plan'] == 'annual' else float(p.get('monthly', 8.9))
+
+
+def reminder_text(sub, amount):
+    """The reminder call; when the price changed since the subscriber last paid, it says so first."""
+    text = REMINDER.format(amount=money(amount), last=' '.join(sub['card_last']))
+    old = sub['amount']
+    if old and abs(float(old) - amount) > 0.001:
+        intro, rest = text.split('. ', 1)
+        text = f"{intro}. {PRICE_NOTE.format(old=money(float(old)), amount=money(amount))}{rest}"
+    return text
 
 
 def money(x):
@@ -54,9 +65,7 @@ def run(cfg, db_path, charge=nedarim.charge_keva, now=None, log=print):
                     con.execute('INSERT INTO alerts(unique_key,subscriber_id,kind,alert_phone,created,state,payload) '
                                 'VALUES(?,?,?,?,?,?,?)',
                                 (key, sub['id'], 'renew_notice', sub['main_phone'], now, 'pending',
-                                 json.dumps({'text': REMINDER.format(amount=money(amount),
-                                                                     last=' '.join(sub['card_last']))},
-                                            ensure_ascii=False)))
+                                 json.dumps({'text': reminder_text(sub, amount)}, ensure_ascii=False)))
                     store.audit(con, 'renew_notice', {'id': sub['id'], 'expires': sub['expires'], 'amount': amount})
                 continue
             if sub['expires'] > day.isoformat() or now - reminder[0] < 20 * 3600:
