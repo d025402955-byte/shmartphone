@@ -65,9 +65,8 @@ def run(cfg, db_path, charge=nedarim.charge_keva, now=None, log=print):
                 continue  # already tried for this period (charged, declined or no answer): never twice
             with con:
                 con.execute('INSERT INTO kv(key,value) VALUES(?,?)', (key, 'trying'))
-            category = (cfg.get('payments') or {}).get('category', 'שמרטפון')
             try:
-                r = charge(cfg, sub['keva_id'], amount, f"{category} {sub['id']}", f"auto-{sub['id']}-{sub['expires']}")
+                r = charge(cfg, sub['keva_id'], amount, nedarim.tag(cfg, sub['id']), f"auto-{sub['id']}-{sub['expires']}")
             except Exception as e:  # no answer: maybe charged; the Nedarim sync extends the subscriber if so
                 r = {'Status': 'Unknown', 'Message': repr(e)[:150]}
             with con:

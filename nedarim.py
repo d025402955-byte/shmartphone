@@ -135,17 +135,39 @@ def name_keva(cfg, keva_id, name, phone, groupe):
         raise RuntimeError('nedarim UpdateKevaNew: ' + str(r.get('Message') if isinstance(r, dict) else r)[:200])
 
 
+def retag_transaction(cfg, transaction_id, groupe):
+    r = _call(cfg, 'UpdateRagil', TransactionId=transaction_id, Groupe=groupe)
+    if not isinstance(r, dict) or r.get('Result') != 'OK':
+        raise RuntimeError('nedarim UpdateRagil: ' + str(r.get('Message') if isinstance(r, dict) else r)[:200])
+
+
+def retag_payments(cfg, con, update=retag_transaction, log=print, limit=30):
+    """Charges made with the old category ('שמרטפון ...') get the donation category in Nedarim, once each."""
+    rows = con.execute("SELECT p.* FROM payments p WHERE p.transaction_id IS NOT NULL AND p.source!='admin' "
+                       "AND NOT EXISTS (SELECT 1 FROM kv WHERE key='retag:' || p.transaction_id) "
+                       "ORDER BY p.id LIMIT ?", (limit,)).fetchall()
+    for p in rows:
+        try:
+            update(cfg, p['transaction_id'], tag(cfg, p['subscriber_id'], deposit=p['plan'] == 'deposit'))
+            state = 'ok'
+        except Exception as e:
+            state = 'error: ' + repr(e)[:150]
+        with con:
+            kv_set(con, 'retag:' + p['transaction_id'], state)
+        log('RETAG', p['transaction_id'], state, flush=True)
+
+
 def name_kevas(cfg, con, update=name_keva, log=print):
+    # keva_named = '<order id>:2': named as a donation ('<order id>' alone = named the old way, done again)
     rows = con.execute("SELECT * FROM subscribers WHERE keva_id IS NOT NULL AND keva_id!='' "
-                       "AND COALESCE(keva_named,'')!=keva_id").fetchall()
-    category = (cfg.get('payments') or {}).get('category', 'שמרטפון')
+                       "AND COALESCE(keva_named,'')!=keva_id || ':2'").fetchall()
     for sub in rows:
-        name = (sub['name'] or '').strip() or f"מנוי שמרטפון {sub['id']}"
+        name = (sub['name'] or '').strip() or f"תורם {sub['id']}"  # never the service's name
         try:
             update(cfg, sub['keva_id'], name.replace('<', '').replace('>', '')[:100], sub['main_phone'],
-                   f"{category} {sub['id']}")
+                   tag(cfg, sub['id'], deposit=sub['plan'] == 'prepaid'))
             with con:
-                con.execute('UPDATE subscribers SET keva_named=? WHERE id=?', (sub['keva_id'], sub['id']))
+                con.execute('UPDATE subscribers SET keva_named=? WHERE id=?', (sub['keva_id'] + ':2', sub['id']))
             log('KEVA_NAMED', sub['id'], sub['keva_id'], flush=True)
         except Exception as e:
             log('KEVA_NAME_ERROR', sub['id'], sub['keva_id'], repr(e)[:200], flush=True)
@@ -163,25 +185,43 @@ def parse_date(s):
         return None
 
 
-def match_deposit(cfg, con, tx):
-    cat = re.escape((cfg.get('payments') or {}).get('category', 'שמרטפון'))
+# What Nedarim Plus sees on every charge: a donation and a number, nothing about a subscription or the service.
+# '<tag> <subscriber id>' for a subscription, '<deposit tag> <subscriber id>' for a deposit top-up.
+TAG, DEPOSIT_TAG = 'תרומה', 'תרומות'
+LEGACY_TAG = 'שמרטפון'  # charges made before 11/2026: 'שמרטפון N' and 'שמרטפון פיקדון N'
+
+
+def tags(cfg):
+    p = cfg.get('payments') or {}
+    return p.get('tag', TAG), p.get('deposit_tag', DEPOSIT_TAG)
+
+
+def tag(cfg, sid, deposit=False):
+    """The category sent to Nedarim with a charge."""
+    return f'{tags(cfg)[1 if deposit else 0]} {sid}'
+
+
+def _match(con, tx, patterns):
     for field in ('Groupe', 'Comments'):
-        m = re.search(cat + r'\s*פיקדון\s*(\d+)', str(tx.get(field) or ''))
-        if m:
-            row = con.execute('SELECT id FROM subscribers WHERE id=?', (int(m.group(1)),)).fetchone()
-            if row:
-                return row['id']
+        for pattern in patterns:
+            m = re.search(pattern, str(tx.get(field) or ''))
+            if m:
+                row = con.execute('SELECT id FROM subscribers WHERE id=?', (int(m.group(1)),)).fetchone()
+                if row:
+                    return row['id']
     return None
 
 
+def match_deposit(cfg, con, tx):
+    legacy = re.escape((cfg.get('payments') or {}).get('category', LEGACY_TAG))
+    return _match(con, tx, [re.escape(tags(cfg)[1]) + r'\s+(\d+)', legacy + r'\s*פיקדון\s*(\d+)'])
+
+
 def match_subscriber(cfg, con, tx):
-    cat = re.escape((cfg.get('payments') or {}).get('category', 'שמרטפון'))
-    for field in ('Groupe', 'Comments'):
-        m = re.search(cat + r'\s*(\d+)', str(tx.get(field) or ''))
-        if m:
-            row = con.execute('SELECT id FROM subscribers WHERE id=?', (int(m.group(1)),)).fetchone()
-            if row:
-                return row['id']
+    legacy = re.escape((cfg.get('payments') or {}).get('category', LEGACY_TAG))
+    sid = _match(con, tx, [re.escape(tags(cfg)[0]) + r'\s+(\d+)', legacy + r'\s*(\d+)'])
+    if sid:
+        return sid
     keva = str(tx.get('KevaId') or '').strip().lstrip('-')  # '-' = a single charge joined to the order
     if keva:
         row = con.execute('SELECT id FROM subscribers WHERE keva_id=?', (keva,)).fetchone()
@@ -250,6 +290,7 @@ def sync(cfg, db_path, fetch=fetch_history, log=print):
         if (cfg.get('payments') or {}).get('manual_keva'):
             freeze_new_kevas(cfg, con, log=log)
             name_kevas(cfg, con, log=log)
+        retag_payments(cfg, con, log=log)
     finally:
         con.close()
     return True

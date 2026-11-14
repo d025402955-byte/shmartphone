@@ -229,6 +229,7 @@ TEXTS = {
     'message_prompt': 'השאירו הודעה לשירות הלקוחות. בסיום הקישו סולמית, כדי שההודעה תישמר.',
     'message_thanks': 'ההודעה התקבלה.',
     'goodbye': 'להתראות.',
+    'hidden_caller': 'מספרך אינו מזוהה. נא להתקשר ממספר מזוהה.',
     'account_pay': 'להצטרפות או לחידוש מנוי בתשלום הקישו 5.',
     'pay_menu': 'למנוי חודשי ב-{monthly} שקלים לחודש, בהוראת קבע באשראי, הקישו 1. '
                 'למנוי שנתי ב-{annual} שקלים, בתשלום אחד, הקישו 2.',
@@ -438,6 +439,9 @@ class Call:
             return self.on_hangup()
         if self.cfg.get('pbx_number') and p.get('PBXnum') != self.cfg['pbx_number']:
             return [{'type': 'hangup'}]
+        if not store.valid_phone(self.phone):  # a hidden number: no subscriber, no verification, no service
+            self.end_call = True
+            return hangup(self.cfg, t(self.cfg, 'hidden_caller'))
         step = self.sess['step'] if self.sess else None
         handlers = {
             'menu': ('menu', self.on_menu), 'act_pick': ('apick', self.on_act_pick),
@@ -1770,7 +1774,7 @@ class Call:
         p = self.cfg.get('payments') or {}
         cmd = {'type': 'creditCard', 'name': 'payment', 'cvv': 'yes', 'tz': 'yes', 'payments': 1,
                'sum': amount, 'paymentsMode': 'regular',
-               'category': f"{p.get('category', 'שמרטפון')} פיקדון {sub['id']}"}
+               'category': nedarim.tag(self.cfg, sub['id'], deposit=True)}
         if self.manual_keva():  # saved for the next top-up: a one-payment standing order (frozen by the sync)
             cmd.update({'paymentsMode': 'kevaMonthly', 'kevaMonths': '1'})
         if p.get('terminal'):
@@ -1792,7 +1796,7 @@ class Call:
         self.save(None)
         try:  # the subscriber pressed 1: their approval of this one charge
             r = nedarim.charge_keva(self.cfg, sub['keva_id'], amount,
-                                    f"{p.get('category', 'שמרטפון')} פיקדון {sub['id']}",
+                                    nedarim.tag(self.cfg, sub['id'], deposit=True),
                                     f"dep-{sub['id']}-{self.call_id}")
         except Exception as e:
             store.audit(self.con, 'keva_charge_unknown', {'id': sub['id'], 'amount': amount, 'error': repr(e)[:150]})
@@ -1826,7 +1830,7 @@ class Call:
         p = self.cfg.get('payments') or {}
         self.save(None)
         try:  # the subscriber pressed the key: this is their approval of this one charge
-            r = nedarim.charge_keva(self.cfg, sub['keva_id'], amount, f"{p.get('category', 'שמרטפון')} {sub['id']}",
+            r = nedarim.charge_keva(self.cfg, sub['keva_id'], amount, nedarim.tag(self.cfg, sub['id']),
                                     f"{sub['id']}-{self.call_id}-{key}")
         except Exception as e:  # no answer: the charge may or may not have gone through; the sync will tell
             store.audit(self.con, 'keva_charge_unknown', {'id': sub['id'], 'amount': amount, 'error': repr(e)[:150]})
@@ -1855,7 +1859,7 @@ class Call:
         monthly, annual = self.prices()
         p = self.cfg.get('payments') or {}
         cmd = {'type': 'creditCard', 'name': 'payment', 'cvv': 'yes', 'tz': 'yes', 'payments': 1,
-               'category': f"{p.get('category', 'שמרטפון')} {sub['id']}",
+               'category': nedarim.tag(self.cfg, sub['id']),
                'files': []}
         # With a saved card (manual_keva / auto_renew) the standing order is for one payment only: it saves the
         # card and ends with this charge, so Nedarim never charges again by itself; the server charges renewals

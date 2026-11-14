@@ -149,6 +149,15 @@ class IvrTests(Base):
         p = {'PBXphone': '0521234567', 'PBXnum': '0999', 'PBXcallId': 'x', 'PBXcallStatus': 'CALL'}
         self.assertEqual(ivr.handle(self.cfg, self.con, p, DAY)[0], [{'type': 'hangup'}])
 
+    def test_hidden_number_gets_no_service(self):
+        for mode in ('menu', 'activate', 'account'):
+            p = {'PBXphone': '', 'PBXnum': PBX, 'PBXcallId': 'h' + mode, 'PBXcallStatus': 'CALL'}
+            with self.con:
+                r = ivr.handle(self.cfg, self.con, p, DAY, mode)[0]
+            self.assertIn('מספרך אינו מזוהה', spoken(r[0]))
+            self.assertEqual(r[-1]['type'], 'hangup')
+        self.assertEqual(self.con.execute('SELECT COUNT(*) FROM subscribers').fetchone()[0], 0)
+
     def test_unknown_gets_trial_and_must_verify_first(self):
         r = self.call('0521234567')
         self.assertEqual(self.ask_name(r), 'anum')
@@ -716,7 +725,7 @@ class PaymentTests(Base):
             r = self.go(psav='1')
         finally:
             nedarim.charge_keva = orig
-        self.assertEqual(charges, [('777', 8.9, f'שמרטפון {sid}')])
+        self.assertEqual(charges, [('777', 8.9, f'תרומה {sid}')])
         self.assertIn('החיוב בוצע', spoken(r[0]))
         self.assertEqual((self.sub()['status'], self.sub()['expires']), ('active', '2026-11-23'))
         # the sync later sees the same charge (joined to the order: minus id): not extended twice
@@ -813,7 +822,7 @@ class PaymentTests(Base):
             r = self.go('pay', pdc='1')
         finally:
             nedarim.charge_keva = orig
-        self.assertEqual(charges, [('777', 20.0, f'שמרטפון פיקדון {sid}')])
+        self.assertEqual(charges, [('777', 20.0, f'תרומות {sid}')])
         self.assertEqual(store.balance(self.sub()), 2000)
         self.assertIn('הפיקדון נטען', spoken(r[0]))
         # a new card instead: a one-payment standing order (the card is saved for next time)
@@ -846,7 +855,7 @@ class PaymentTests(Base):
         upd = lambda c, k, name, phone, g: calls.append((k, name, phone, g))
         nedarim.name_kevas(self.cfg, self.con, update=upd, log=lambda *a, **k: None)
         nedarim.name_kevas(self.cfg, self.con, update=upd, log=lambda *a, **k: None)
-        self.assertEqual(calls, [('777', f'מנוי שמרטפון {sid}', '0521234567', f'שמרטפון {sid}')])
+        self.assertEqual(calls, [('777', f'תורם {sid}', '0521234567', f'תרומה {sid}')])
         with self.con:  # a new standing order is named again
             store.set_keva(self.con, sid, '888')
         nedarim.name_kevas(self.cfg, self.con, update=upd, log=lambda *a, **k: None)
@@ -906,6 +915,31 @@ class PaymentTests(Base):
         self.assertEqual(store.balance(self.sub()), 2000)
         p = self.con.execute('SELECT * FROM payments WHERE subscriber_id=?', (sid,)).fetchall()
         self.assertEqual([(x['transaction_id'], x['confirm']) for x in p], [('82509025', '0408831')])
+
+    def test_nedarim_sees_donations_only_and_old_tags_still_match(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='trial', status='disabled')
+        self.go('pay')
+        cc = self.go('pay', pplan='1')[-1]
+        self.assertEqual(cc['category'], f'תרומה {sid}')
+        for text in (cc['category'], nedarim.tag(self.cfg, sid, deposit=True)):
+            self.assertNotIn('שמרטפון', text)
+            self.assertNotIn('מנוי', text)
+        new_sub = {'Groupe': f'תרומה {sid}'}
+        new_dep = {'Groupe': f'תרומות {sid}'}
+        old_sub, old_dep = {'Groupe': f'שמרטפון {sid}'}, {'Groupe': f'שמרטפון פיקדון {sid}'}
+        self.assertEqual([nedarim.match_deposit(self.cfg, self.con, x) for x in (new_dep, old_dep, new_sub, old_sub)],
+                         [sid, sid, None, None])
+        self.assertEqual([nedarim.match_subscriber(self.cfg, self.con, x) for x in (new_sub, old_sub)], [sid, sid])
+        with self.con:  # charges made with the old tag get the donation tag in Nedarim, once
+            store.record_payment(self.con, sid, source='phone', months=1, amount=8.9, confirm='5', transaction_id='77',
+                                 day=DAY)
+            store.add_credit(self.con, sid, 1000, source='phone', amount=10.0, confirm='6', transaction_id='78')
+        calls = []
+        for _ in range(2):
+            nedarim.retag_payments(self.cfg, self.con, update=lambda c, tx, g: calls.append((tx, g)),
+                                   log=lambda *a, **k: None)
+        self.assertEqual(calls, [('77', f'תרומה {sid}'), ('78', f'תרומות {sid}')])
 
     def test_subscriber_sets_noise_duration(self):
         with self.con:
@@ -1020,7 +1054,7 @@ class PaymentTests(Base):
         r = self.go(pplan='1')
         cc = r[-1]
         self.assertEqual((cc['type'], cc['sum'], cc['paymentsMode'], cc['category'], cc['kevaMonths']),
-                         ('creditCard', 8.9, 'kevaMonthly', f'שמרטפון {sid}', ''))
+                         ('creditCard', 8.9, 'kevaMonthly', f'תרומה {sid}', ''))
         r = self.go(payment='OK', CONFIRM_payment='555')
         self.assertEqual(r[-1]['type'], 'hangup')
         s = self.sub()
@@ -1757,7 +1791,7 @@ class PingAndDepositTests(Base):
         r = self.ivr('0521234567', 'd1', 'pay', pplan='3', pdep='2')
         cc = r[-1]
         self.assertEqual((cc['type'], cc['sum'], cc['paymentsMode']), ('creditCard', 20.0, 'regular'))
-        self.assertIn('פיקדון', cc['category'])
+        self.assertEqual(cc['category'], f'תרומות {self.sid}')
         self.ivr('0521234567', 'd1', 'pay', pplan='3', pdep='2', payment='OK', CONFIRM_payment='777')
         sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (self.sid,)).fetchone()
         self.assertEqual((sub['balance'], sub['plan']), (2000, 'prepaid'))
