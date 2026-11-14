@@ -494,10 +494,10 @@ def activity_page(cfg, con):
                  f"<td>{E(r['kind'])}</td><td>{E(r['alert_phone'] or '')}</td><td>{E(r['state'])}</td>"
                  f"<td class='muted'>{E((r['result'] or '')[:120])}</td></tr>" for r in alerts)
     return page('פעילות', f"""{payments_card(con)}<div class="card"><h3>ניטורים ושיחות פתוחים</h3><div class="wrap"><table>{SESSION_HEAD}{lv}</table></div></div>
-<div class="card"><h3>היסטוריית שיחות</h3><p class="muted">200 השיחות האחרונות שהסתיימו</p>
-<div class="wrap"><table>{SESSION_HEAD}{rc}</table></div></div>
 <div class="card"><h3>הודעות לשירות הלקוחות</h3><div class="wrap"><table><tr><th>זמן</th><th>מטלפון</th><th>מנוי</th>
 <th>אורך</th><th>מצב</th><th></th></tr>{ms}</table></div></div>
+<div class="card"><h3>היסטוריית שיחות</h3><p class="muted">200 השיחות האחרונות שהסתיימו</p>
+<div class="wrap"><table>{SESSION_HEAD}{rc}</table></div></div>
 <div class="card"><h3>התראות אחרונות</h3><div class="wrap"><table><tr><th>זמן</th><th>מנוי</th><th>סוג</th><th>אל</th>
 <th>מצב</th><th>תשובה</th></tr>{al}</table></div></div>""")
 
