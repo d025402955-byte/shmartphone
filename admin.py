@@ -493,7 +493,8 @@ def activity_page(cfg, con):
     al = ''.join(f"<tr><td>{fmt_ts(r['created'])}</td><td><a href='/admin/sub/{r['subscriber_id']}'>{E(r['main_phone'] or '')}</a></td>"
                  f"<td>{E(r['kind'])}</td><td>{E(r['alert_phone'] or '')}</td><td>{E(r['state'])}</td>"
                  f"<td class='muted'>{E((r['result'] or '')[:120])}</td></tr>" for r in alerts)
-    return page('פעילות', f"""{payments_card(con)}<div class="card"><h3>ניטורים ושיחות פתוחים</h3><div class="wrap"><table>{SESSION_HEAD}{lv}</table></div></div>
+    return page('פעילות', f"""<div class="card"><h3>ניטורים ושיחות פתוחים</h3><div class="wrap"><table>{SESSION_HEAD}{lv}</table></div></div>
+{payments_card(con)}
 <div class="card"><h3>הודעות לשירות הלקוחות</h3><div class="wrap"><table><tr><th>זמן</th><th>מטלפון</th><th>מנוי</th>
 <th>אורך</th><th>מצב</th><th></th></tr>{ms}</table></div></div>
 <div class="card"><h3>היסטוריית שיחות</h3><p class="muted">200 השיחות האחרונות שהסתיימו</p>
