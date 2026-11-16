@@ -118,9 +118,8 @@ TEXTS = {
     'rc_keys_free': 'לחיוג לטלפון שבחדר והפעלת הניטור מחדש הקישו 1. לסיום הקישו 0.',
     'rc_no_balance': 'החיוג לטלפון שבחדר עולה כשקל, ומחויב מהפיקדון. אין מספיק יתרה בפיקדון. '
                      'לטעינת פיקדון התקשרו מהטלפון הרשום, הקישו 4, אחר כך 5, ואחר כך 3.',
-    'vm_pin': 'הקישו את הקוד.',
-    'vm_bad_pin': 'הקוד שגוי.',
     'vm_none': 'אין הודעות.',
+    'owner_menu': 'לשמיעת ההודעות הקישו 1. לסיכום של 24 השעות האחרונות הקישו 2. לסיום הקישו 0.',
     'vm_intro': 'יש {n} הודעות, מתוכן {new} חדשות. מתחילים מהחדשה ביותר. '
                 'בכל רגע: לבאה הקישו 3, לקודמת 1, לשמיעה חוזרת 2, לפרטי ההודעה 5, למחיקה 7, '
                 'לחיוג למשאיר ההודעה 8, לסיום 0.',
@@ -461,7 +460,8 @@ class Call:
             'al_menu': ('alm', self.on_alert_menu), 'rc_wait': ('rcw', self.on_reconnect_wait),
             'rc_done': ('rcd', self.on_reconnect_done), 'stop_pick': ('stp', self.on_stop_pick),
             'al_mode': ('alt', self.on_alert_mode), 'pay_dep': ('pdep', self.on_deposit_pick),
-            'vm_pin': ('vpin', self.on_vm_pin), 'vm_nav': ('vnav', self.on_vm_nav),
+            'vm_nav': ('vnav', self.on_vm_nav),
+            'own_menu': ('own', self.on_owner_menu),
             'vm_route': ('vroute', lambda _r: self.vm_play(self.data.get('vidx', 0) + 1)),
             'act_conf': ('aconf', self.on_act_conf), 'act_more': ('amore', self.on_act_more),
             'act_num': ('anum', self.on_act_num), 'par_menu': ('pmenu', self.on_parent_menu),
@@ -1367,25 +1367,34 @@ class Call:
 
     # ----- 0 (not announced): the owner's voicemail, behind a code -----
     def voicemail(self, prefix=None):
-        if not self.cfg.get('voicemail_pin_hash'):
-            return self.menu(notices=False)
-        self.save('vm_pin')
-        return [ask('vpin', [prefix, t(self.cfg, 'vm_pin')], mx=8, mn=1, timeout=8)]
+        """Key 0: the owner's menu (messages, summary), only for phones of an active free-plan subscriber."""
+        sub = store.find_by_phone(self.con, self.phone)
+        if not sub or sub['plan'] != 'free' or sub['status'] != 'active':
+            return self.menu(notices=False)  # as if the key did nothing
+        self.data['vm_ok'] = True
+        return self.owner_menu(prefix)
 
-    def on_vm_pin(self, value):
-        import admin
-        if not admin.check_password(value or '', self.cfg['voicemail_pin_hash']):
-            store.audit(self.con, 'voicemail_bad_pin', {'phone': self.phone})
-            if self.retry():
-                return self.voicemail(t(self.cfg, 'vm_bad_pin'))
-            self.save(None)
-            return hangup(self.cfg, t(self.cfg, 'vm_bad_pin'))
+    def owner_menu(self, prefix=None):
+        self.save('own_menu')
+        return [ask('own', [prefix, t(self.cfg, 'owner_menu')], timeout=8)]
+
+    def on_owner_menu(self, key):
+        if not self.data.get('vm_ok'):  # only after the right code in this call
+            return self.voicemail()
+        if key == '1':
+            return self.vm_list()
+        if key == '2':
+            import report
+            return self.owner_menu(' '.join(report.spoken_summary(self.con, self.now)))
+        self.save(None)
+        return hangup(self.cfg, t(self.cfg, 'goodbye'))
+
+    def vm_list(self):
         rows = self.con.execute("SELECT id, state FROM messages WHERE (file_id IS NOT NULL OR file_name IS NOT NULL) "
                                 "AND state!='deleted' "
                                 "ORDER BY id DESC LIMIT 100").fetchall()
         if not rows:
-            self.save(None)
-            return hangup(self.cfg, t(self.cfg, 'vm_none'))
+            return self.owner_menu(t(self.cfg, 'vm_none'))
         new = [r['id'] for r in rows if r['state'] != 'heard']
         old = [r['id'] for r in rows if r['state'] == 'heard']
         self.data['vm'] = new + old  # new first, newest first

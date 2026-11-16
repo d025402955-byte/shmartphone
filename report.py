@@ -163,3 +163,38 @@ def run(cfg, db_path, mail, now=None, force=False, log=print):
         return True
     finally:
         con.close()
+
+
+def money(x):
+    return ('%.2f' % x).rstrip('0').rstrip('.')
+
+
+def spoken_summary(con, now=None):
+    """The owner's phone summary (key 0, then 2): the last 24 hours, money in today and this month, subscribers."""
+    now = now or time.time()
+    since = now - 86400
+    t = time.localtime(now)
+    midnight = time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1))
+    month = time.mktime((t.tm_year, t.tm_mon, 1, 0, 0, 0, 0, 0, -1))
+    one = lambda sql, *a: con.execute(sql, a).fetchone()[0] or 0  # noqa: E731
+    calls = one('SELECT COUNT(*) FROM sessions WHERE started>=?', since)
+    monitors = one('SELECT COUNT(*) FROM sessions WHERE mon_start>=?', since)
+    noise = one("SELECT COUNT(*) FROM alerts WHERE created>=? AND kind='noise' AND state='sent'", since)
+    joined = one("SELECT COUNT(*) FROM subscribers WHERE created>=?", since)
+    msgs = one('SELECT COUNT(*) FROM messages WHERE created>=?', since)
+    paid = "SELECT COUNT(*), COALESCE(SUM(amount),0) FROM payments WHERE created>=? AND source!='admin'"
+    n_today, today_sum = con.execute(paid, (midnight,)).fetchone()
+    n_month, month_sum = con.execute(paid, (month,)).fetchone()
+    day = datetime.date.fromtimestamp(now)
+    subs = con.execute("SELECT * FROM subscribers WHERE status IN ('active','trial')").fetchall()
+    active = sum(1 for s in subs if s['status'] == 'active' and store.authorization(s, day)[0])
+    trial = sum(1 for s in subs if s['status'] == 'trial' and store.authorization(s, day)[0])
+    live = one("SELECT COUNT(*) FROM sessions WHERE status='monitoring' AND ended IS NULL")
+    return [
+        f'סיכום 24 השעות האחרונות: {calls} שיחות נכנסות, {monitors} ניטורים, {noise} התראות רעש, '
+        f'{joined} מנויים חדשים, ו-{msgs} הודעות.',
+        f'היום נכנסו {money(today_sum)} שקלים, ב-{n_today} תשלומים.',
+        f'מתחילת החודש נכנסו {money(month_sum)} שקלים, ב-{n_month} תשלומים.',
+        f'מנויים פעילים: {active}, ועוד {trial} בתקופת ניסיון.',
+        f'כרגע מנוטרים {live} חדרים.',
+    ]

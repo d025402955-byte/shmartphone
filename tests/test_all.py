@@ -1866,7 +1866,6 @@ class MessageExtensionTests(Base):
 
 class VoicemailTests(Base):
     def test_record_then_owner_listens_with_code(self):
-        self.cfg['voicemail_pin_hash'] = admin.hash_password('12345', rounds=1000)
         caller = {'PBXphone': '0521234567', 'PBXnum': PBX, 'PBXcallId': 'v1', 'PBXcallStatus': 'CALL'}
         with self.con:
             ivr.handle(self.cfg, self.con, caller, DAY, 'menu')
@@ -1880,30 +1879,61 @@ class VoicemailTests(Base):
         call = lambda **a: ivr.handle(self.cfg, self.con, {**owner, **a}, DAY, 'menu')[0]
         with self.con:
             call()
-        with self.con:
+        with self.con:  # not a free-plan number: key 0 does nothing
             r = call(menu='0')
-        self.assertEqual(r[0]['name'], 'vpin')
+        self.assertEqual(r[0]['name'], 'menu')
         with self.con:
-            r = call(menu='0', vpin='999')
-        self.assertIn('שגוי', ' '.join(f.get('text', '') for f in r[0]['files']))
+            store.create_subscriber(self.con, main_phone='0533333333', plan='free', status='active')
+        owner['PBXcallId'] = 'o1b'
         with self.con:
-            r = call(menu='0', vpin='12345')
+            call()
+        with self.con:
+            r = call(menu='0')  # the owner's menu, no code: 1 messages, 2 summary
+        self.assertEqual(r[0]['name'], 'own')
+        self.assertIn('לסיכום של 24 השעות האחרונות הקישו 2', r[0]['files'][0]['text'])
+        with self.con:
+            r = call(menu='0', own='1')
         self.assertIn({'fileName': 'f.wav'}, r[0]['files'])
         self.assertIn(sp('0521234567'), spoken(r[0]))
         with self.con:
-            r = call(menu='0', vpin='12345', vnav='8')  # call the sender back
+            r = call(menu='0', own='1', vnav='8')  # call the sender back
         self.assertEqual((r[-1]['type'], r[-1]['dialPhone']), ('simpleRouting', '0521234567'))
         with self.con:
-            r = call(menu='0', vpin='12345', vnav='8', vroute='ANSWERED')  # back to the list, then the menu
+            r = call(menu='0', own='1', vnav='8', vroute='ANSWERED')  # back to the list, then the menu
         with self.con:
             call(menu='0')
         with self.con:
-            call(menu='0', vpin='12345')
+            call(menu='0', own='1')
         with self.con:
-            r = call(menu='0', vpin='12345', vnav='7')
+            r = call(menu='0', own='1', vnav='7')
         self.assertEqual(self.con.execute('SELECT state FROM messages').fetchone()[0], 'deleted')
 
-    def test_key0_without_code_configured_just_shows_menu(self):
+    def test_owner_hears_the_summary(self):
+        now = time.time()
+        with self.con:
+            store.create_subscriber(self.con, main_phone='0533333333', plan='free', status='active')
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='monthly', status='active',
+                                          expires='2099-01-01')
+            store.record_payment(self.con, sid, source='phone', months=1, amount=10, confirm='1', day=DAY)
+            self.con.execute("INSERT INTO sessions(call_id,subscriber_id,phone,started,mon_start,status) "
+                             "VALUES('live',?,'0521234567',?,?,'monitoring')", (sid, now - 600, now - 500))
+        owner = {'PBXphone': '0533333333', 'PBXnum': PBX, 'PBXcallId': 'o3', 'PBXcallStatus': 'CALL'}
+        call = lambda **a: ivr.handle(self.cfg, self.con, {**owner, **a}, DAY, 'menu')[0]
+        with self.con:
+            call()
+            call(menu='0')
+            r = call(menu='0', own='2')
+        text = r[0]['files'][0]['text']
+        for part in ('סיכום 24 השעות האחרונות', 'היום נכנסו 10 שקלים, ב-1 תשלומים', 'מתחילת החודש נכנסו 10 שקלים',
+                     'מנויים פעילים: 2', 'כרגע מנוטרים 1 חדרים'):
+            self.assertIn(part, text)
+        self.assertEqual(r[0]['name'], 'own')  # then the owner's menu again
+        with self.con:  # another number: no summary
+            r = ivr.handle(self.cfg, self.con, {**owner, 'PBXphone': '0544444444', 'PBXcallId': 'o4', 'menu': '0',
+                                                'own': '2'}, DAY, 'menu')[0]
+        self.assertNotIn('נכנסו', ' '.join(spoken(x) for x in r if x.get('files')))
+
+    def test_key0_for_a_number_that_is_not_free_just_shows_menu(self):
         p = {'PBXphone': '0533333333', 'PBXnum': PBX, 'PBXcallId': 'o2', 'PBXcallStatus': 'CALL'}
         with self.con:
             ivr.handle(self.cfg, self.con, p, DAY, 'menu')
