@@ -241,7 +241,21 @@ LIST_SORTS = {  # column -> (title, SQL); the list is paged, so it sorts in the 
     'id': ('#', 's.id'), 'name': ('שם', "NULLIF(s.name,'') IS NULL, s.name"), 'phone': ('טלפון ראשי', 's.main_phone'),
     'nph': ('נוספים', 'nph'), 'status': ('סטטוס', 's.status'), 'plan': ('סוג', 's.plan'),
     'expires': ('תוקף', 's.expires IS NULL, s.expires'), 'alert': ('התראות ל', "COALESCE(s.alert_phone,'')"),
+    # the subscriber's own monitor settings (account menu, key 9); empty = the system default
+    'threshold': ('סף רעש', 's.noise_threshold IS NULL, s.noise_threshold'),
+    'seconds': ('משך רעש', 's.noise_seconds IS NULL, s.noise_seconds'),
+    'gap': ('בין התראות', 's.alert_gap IS NULL, s.alert_gap'),
+    'ring': ('צלצול', 's.ring_seconds IS NULL, s.ring_seconds'),
+    'renew': ('חידוש אוטומטי', "s.renew_off IS NOT NULL, s.keva_id IS NULL"),
 }
+
+
+def renew_label(r):
+    if r['plan'] not in ('monthly', 'annual'):
+        return ''
+    if r['renew_off']:
+        return "<span class='exp'>בוטל</span>"
+    return 'פעיל' if r['keva_id'] else 'בלי כרטיס'
 
 
 def list_page(cfg, con, q, day):
@@ -273,13 +287,18 @@ def list_page(cfg, con, q, day):
     trs = []
     for r in rows:
         expired = r['expires'] and r['expires'] < day.isoformat() and r['plan'] != 'free'
+        secs = f"{r['noise_seconds']:g} שנ'" if r['noise_seconds'] else ''
+        gap = E(store.gap_name(r['alert_gap'])) if r['alert_gap'] else ''
+        ring = f"{r['ring_seconds']} שנ'" if r['ring_seconds'] else ''
         trs.append(
             f"<tr><td><a href='/admin/sub/{r['id']}'>{r['id']}</a></td><td>{E(r['name'])}</td>"
             f"<td><a href='/admin/sub/{r['id']}'>{E(r['main_phone'])}</a></td><td>{r['nph'] or ''}</td>"
             f"<td><span class='pill {r['status']}'>{E(store.STATUSES.get(r['status'], r['status']))}</span></td>"
             f"<td>{E(store.PLANS.get(r['plan'], r['plan']))}</td>"
             f"<td class='{'exp' if expired else ''}'>{fmt_date(r['expires'])}</td>"
-            f"<td>{E(r['alert_phone'] or '')}</td></tr>")
+            f"<td>{E(r['alert_phone'] or '')}</td>"
+            f"<td>{r['noise_threshold'] or ''}</td><td>{secs}</td><td>{gap}</td><td>{ring}</td>"
+            f"<td>{renew_label(r)}</td></tr>")
     stat_opts = {'': 'הכל', **store.STATUSES, 'expired': 'פג תוקף'}
     nav = ''
     pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
