@@ -5,7 +5,7 @@ import time
 import store
 
 ALERT_NAMES = {'noise': 'רעש', 'disconnected': 'ניתוק', 'balance': 'פיקדון נגמר', 'reconnect': 'חיוג חוזר',
-               'verify': 'אימות מספר', 'message': 'צינתוק על הודעה', 'renew_notice': 'תזכורת לפני חידוש'}
+               'verify': 'אימות מספר', 'message': 'צינתוק על הודעה', 'renew_notice': 'תזכורת לפני חידוש', 'payment_notice': 'הודעה על תשלום שנכשל'}
 STATE_NAMES = {'sent': 'נשלחו', 'emailed': 'נשלחו למייל','answered': 'נענו', 'heard': 'נשמעו', 'skipped': 'דולגו', 'failed': 'נכשלו',
                'unknown': 'לא ידוע', 'pending': 'ממתינות', 'sending': 'בשליחה'}
 MODE_NAMES = {'activate': 'הפעלה', 'listen': 'האזנה', 'menu': 'תפריט', 'account': 'מנוי', 'alert': 'שיחת התראה',
@@ -69,7 +69,8 @@ def build(con, now=None, day=None):
         out.append(f'שימו לב: מנוי #{sid} ({phone or "?"}) קיבל {n} התראות רעש')
 
     pays = con.execute('SELECT p.created, p.subscriber_id, s.main_phone, p.plan, p.amount, p.source FROM payments p '
-                       'LEFT JOIN subscribers s ON s.id=p.subscriber_id WHERE p.created>=? ORDER BY p.created',
+                       'LEFT JOIN subscribers s ON s.id=p.subscriber_id WHERE p.created>=? '
+                       'AND COALESCE(p.pending,0)=0 ORDER BY p.created',
                        (since,)).fetchall()
     section('תשלומים')
     if pays:
@@ -182,7 +183,8 @@ def spoken_summary(con, now=None):
     noise = one("SELECT COUNT(*) FROM alerts WHERE created>=? AND kind='noise' AND state='sent'", since)
     joined = one("SELECT COUNT(*) FROM subscribers WHERE created>=?", since)
     msgs = one('SELECT COUNT(*) FROM messages WHERE created>=?', since)
-    paid = "SELECT COUNT(*), COALESCE(SUM(amount),0) FROM payments WHERE created>=? AND source!='admin'"
+    paid = ("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM payments WHERE created>=? AND source!='admin' "
+            "AND COALESCE(pending,0)=0")  # only charges Nedarim confirmed
     n_today, today_sum = con.execute(paid, (midnight,)).fetchone()
     n_month, month_sum = con.execute(paid, (month,)).fetchone()
     day = datetime.date.fromtimestamp(now)

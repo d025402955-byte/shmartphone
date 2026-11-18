@@ -1898,16 +1898,24 @@ class Call:
         if status != 'OK':
             store.audit(self.con, 'payment_failed', {'id': sub['id'], 'plan': plan, 'status': status[:40]})
             return hangup(self.cfg, t(self.cfg, 'pay_failed'))
+        # OK without a confirmation number is no proof of a charge: it opens at once, provisionally, and is
+        # undone if Nedarim does not show the charge within a few hours (store.add_provisional / expire_pending)
         if plan == 'deposit':
-            store.add_credit(self.con, sub['id'], round(float(amount) * 100), source='phone', amount=amount,
-                             confirm=confirm)
+            if confirm:
+                store.add_credit(self.con, sub['id'], round(float(amount) * 100), source='phone', amount=amount,
+                                 confirm=confirm)
+            else:
+                store.add_provisional(self.con, sub['id'], plan, amount, self.day)
             sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()
             bal = store.balance(sub)
             return hangup(self.cfg, t(self.cfg, 'pay_ok_deposit', amount=self.money(bal / 100),
                                       time=self.say_minutes(bal // self.per_minute())), t(self.cfg, 'pay_next'))
         months = 12 if plan == 'annual' else 1
-        new = store.record_payment(self.con, sub['id'], source='phone', months=months, amount=amount,
-                                   confirm=confirm, day=self.day)
+        if confirm:
+            new = store.record_payment(self.con, sub['id'], source='phone', months=months, amount=amount,
+                                       confirm=confirm, day=self.day)
+        else:
+            new = store.add_provisional(self.con, sub['id'], plan, amount, self.day)
         if self.auto_renew():  # paying with a card again (re)starts the automatic renewal
             self.con.execute('UPDATE subscribers SET renew_off=NULL WHERE id=?', (sub['id'],))
         sub = self.con.execute('SELECT * FROM subscribers WHERE id=?', (sub['id'],)).fetchone()

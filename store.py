@@ -123,6 +123,8 @@ MIGRATIONS = {
     'sessions': [('step', 'TEXT'), ('mode', 'TEXT'), ('data', 'TEXT'), ('mon_start', 'REAL'), ('charged', 'INTEGER')],
     'alerts': [('payload', 'TEXT'), ('not_before', 'REAL'), ('heard', 'REAL'), ('charged', 'INTEGER')],
     'noise_events': [('file_name', 'TEXT'), ('folder', 'TEXT'), ('file_url', 'TEXT')],
+    # pending: 1 = opened before Nedarim showed the charge, 2 = never shown and undone; undo: the state to restore
+    'payments': [('pending', 'INTEGER'), ('undo', 'TEXT')],
     'subscribers': [('billing', 'TEXT'), ('keva_id', 'TEXT'), ('balance', 'INTEGER'), ('alert_mode', 'TEXT'),
                     ('alert_extra', 'TEXT'), ('alert_backup', 'TEXT'), ('trial_renewed', 'REAL'),
                     ('keva_frozen', 'REAL'), ('card_last', 'TEXT'), ('renew_off', 'REAL'),
@@ -356,6 +358,7 @@ def record_payment(con, sid, *, source, months, amount, confirm=None, transactio
         # charge is then matched to that phone payment by subscriber, amount and date, never extended twice.
         day_ts = time.mktime(day.timetuple())
         row = con.execute("SELECT * FROM payments WHERE subscriber_id=? AND source='phone' AND plan!='deposit' "
+                          "AND COALESCE(pending,0)!=2 "
                           "AND transaction_id IS NULL "
                           "AND COALESCE(confirm,'')='' AND ABS(amount-?)<0.01 AND created BETWEEN ? AND ? "
                           "ORDER BY id LIMIT 1", (sid, amount, day_ts - 2 * 86400, day_ts + 3 * 86400)).fetchone()
@@ -365,6 +368,8 @@ def record_payment(con, sid, *, source, months, amount, confirm=None, transactio
             if keva_id:
                 set_keva(con, sid, keva_id)
             audit(con, 'payment_linked', {'id': sid, 'payment': row['id'], 'transaction': transaction_id})
+            if row['pending'] == 1:  # opened before the charge was seen: now it is confirmed
+                con.execute('UPDATE payments SET pending=0 WHERE id=?', (row['id'],))
             return None
     new = extend(con, sid, months, day)
     plan = 'annual' if months >= 12 else 'monthly'
@@ -401,6 +406,7 @@ def add_credit(con, sid, agorot, *, source, amount, confirm=None, transaction_id
         # Nedarim charge is then this phone deposit, matched by subscriber, amount and time, never credited twice.
         now = time.time()
         row = con.execute("SELECT * FROM payments WHERE subscriber_id=? AND source='phone' AND plan='deposit' "
+                          "AND COALESCE(pending,0)!=2 "
                           "AND transaction_id IS NULL AND COALESCE(confirm,'')='' AND ABS(amount-?)<0.01 "
                           "AND created BETWEEN ? AND ? ORDER BY id LIMIT 1",
                           (sid, amount, now - 3 * 86400, now + 3600)).fetchone()
@@ -408,7 +414,17 @@ def add_credit(con, sid, agorot, *, source, amount, confirm=None, transaction_id
             con.execute('UPDATE payments SET confirm=?, transaction_id=? WHERE id=?',
                         (confirm, transaction_id, row['id']))
             audit(con, 'payment_linked', {'id': sid, 'payment': row['id'], 'transaction': transaction_id})
+            if row['pending'] == 1:  # credited before the charge was seen: now it is confirmed
+                con.execute('UPDATE payments SET pending=0 WHERE id=?', (row['id'],))
             return None
+    con.execute('INSERT INTO payments(subscriber_id,source,plan,amount,confirm,transaction_id,created) '
+                'VALUES(?,?,?,?,?,?,?)', (sid, source, 'deposit', amount, confirm, transaction_id, time.time()))
+    new = _credit(con, sid, agorot, source)
+    audit(con, 'deposit', {'id': sid, 'agorot': agorot, 'source': source, 'balance': new, 'note': note})
+    return new
+
+
+def _credit(con, sid, agorot, source):
     sub = con.execute('SELECT * FROM subscribers WHERE id=?', (sid,)).fetchone()
     keep_plan = sub['plan'] in ('monthly', 'annual', 'free') and authorization(sub, datetime.date.today())[0]
     if keep_plan:  # an active subscription keeps its plan; the deposit pays for extras (reconnect calls)
@@ -418,11 +434,65 @@ def add_credit(con, sid, agorot, *, source, amount, confirm=None, transaction_id
         con.execute("UPDATE subscribers SET balance=COALESCE(balance,0)+?, plan='prepaid', status='active', "
                     "billing=COALESCE(billing,?), updated=? WHERE id=?",
                     (agorot, 'nedarim' if source != 'admin' else 'admin', time.time(), sid))
-    con.execute('INSERT INTO payments(subscriber_id,source,plan,amount,confirm,transaction_id,created) '
-                'VALUES(?,?,?,?,?,?,?)', (sid, source, 'deposit', amount, confirm, transaction_id, time.time()))
-    new = con.execute('SELECT balance FROM subscribers WHERE id=?', (sid,)).fetchone()[0]
-    audit(con, 'deposit', {'id': sid, 'agorot': agorot, 'source': source, 'balance': new, 'note': note})
-    return new
+    return con.execute('SELECT balance FROM subscribers WHERE id=?', (sid,)).fetchone()[0]
+
+
+CONFIRM_HOURS = 3  # a phone payment Nedarim has not shown by then is undone (pending=2)
+
+
+def add_provisional(con, sid, plan, amount, day):
+    """A phone payment the card module reported OK without a confirmation number: it opens at once, and the
+    Nedarim sync confirms it (record_payment / add_credit link the charge) or, after CONFIRM_HOURS, it is undone.
+    Returns the new paid-until date, or the new balance for a deposit."""
+    sub = con.execute('SELECT * FROM subscribers WHERE id=?', (sid,)).fetchone()
+    undo = {k: sub[k] for k in ('plan', 'status', 'expires', 'billing', 'amount')}
+    if plan == 'deposit':
+        result = _credit(con, sid, round(float(amount) * 100), 'phone')
+        paid_until = None
+    else:
+        result = extend(con, sid, 12 if plan == 'annual' else 1, day)
+        con.execute('UPDATE subscribers SET billing=?, amount=? WHERE id=?', ('nedarim', amount, sid))
+        paid_until = result.isoformat()
+    cur = con.execute('INSERT INTO payments(subscriber_id,source,plan,amount,paid_until,pending,undo,created) '
+                      'VALUES(?,?,?,?,?,1,?,?)', (sid, 'phone', plan, amount, paid_until, json.dumps(undo), time.time()))
+    con.execute("INSERT OR REPLACE INTO kv(key,value) VALUES('nedarim_sync_soon',?)", (str(int(time.time()) + 90),))
+    audit(con, 'payment_provisional', {'id': sid, 'plan': plan, 'amount': amount, 'payment': cur.lastrowid})
+    return result
+
+
+def expire_pending(con, now=None, hours=CONFIRM_HOURS):
+    """Undo phone payments Nedarim never showed: take the deposit back, or restore the subscription as it was."""
+    now = now or time.time()
+    rows = con.execute('SELECT * FROM payments WHERE pending=1 AND created<?', (now - hours * 3600,)).fetchall()
+    for p in rows:
+        con.execute('UPDATE payments SET pending=2 WHERE id=?', (p['id'],))
+        sub = con.execute('SELECT * FROM subscribers WHERE id=?', (p['subscriber_id'],)).fetchone()
+        if not sub:
+            continue
+        undo = json.loads(p['undo'] or '{}')
+        if p['plan'] == 'deposit':
+            con.execute('UPDATE subscribers SET balance=COALESCE(balance,0)-?, updated=? WHERE id=?',
+                        (round(float(p['amount']) * 100), now, sub['id']))
+        elif sub['expires'] == p['paid_until']:  # nothing paid since: back to exactly how it was
+            con.execute('UPDATE subscribers SET plan=?, status=?, expires=?, next_charge=?, billing=?, amount=?, '
+                        'updated=? WHERE id=?', (undo.get('plan'), undo.get('status'), undo.get('expires'),
+                                                 undo.get('expires'), undo.get('billing'), undo.get('amount'), now,
+                                                 sub['id']))
+        elif sub['expires']:  # paid again since: take this payment's months off
+            back = add_months(datetime.date.fromisoformat(sub['expires']), -(12 if p['plan'] == 'annual' else 1))
+            con.execute('UPDATE subscribers SET expires=?, next_charge=?, updated=? WHERE id=?',
+                        (back.isoformat(), back.isoformat(), now, sub['id']))
+        audit(con, 'payment_revoked', {'id': sub['id'], 'payment': p['id'], 'plan': p['plan'], 'amount': p['amount']})
+        # tell the subscriber: a call to the main phone (sent by the alert worker)
+        text = PAYMENT_FAILED_NOTICE.format(what='הפיקדון שנטען בוטל' if p['plan'] == 'deposit' else 'המנוי בוטל')
+        con.execute("INSERT OR IGNORE INTO alerts(unique_key,subscriber_id,kind,alert_phone,created,state,payload) "
+                    "VALUES(?,?,?,?,?,?,?)", (f"payfail:{p['id']}", sub['id'], 'payment_notice', sub['main_phone'],
+                                              now, 'pending', json.dumps({'text': text}, ensure_ascii=False)))
+    return len(rows)
+
+
+PAYMENT_FAILED_NOTICE = ('שלום, כאן שְׁמַרְטַפוֹן. התשלום שביצעתם לא אושר על ידי חברת האשראי, ולכן {what}. '
+                         'אפשר לשלם שוב בכל עת: התקשרו לשְׁמַרְטַפוֹן והקישו 4 לניהול המנוי. תודה.')
 
 
 ALERT_MODES = {'ping': 'צינתוק חינם', 'voice': 'הודעה קצרה חינם', 'message': 'הודעה קולית בתשלום',

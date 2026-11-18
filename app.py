@@ -203,7 +203,8 @@ def alert_worker(cfg, wake):
                 pass
         except Exception as e:
             print('WORKER_ERROR', repr(e)[:300], flush=True)
-        if time.time() - last_sync > int(cfg.get('nedarim_sync_seconds', 1200)):
+        if time.time() - last_sync > int(cfg.get('nedarim_sync_seconds', 1200)) or \
+                (time.time() - last_sync > 240 and nedarim.sync_soon(cfg['db_path'])):  # a payment waits for it
             last_sync = time.time()
             try:
                 nedarim.sync(cfg, cfg['db_path'])

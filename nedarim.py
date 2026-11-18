@@ -271,6 +271,16 @@ def apply_transactions(cfg, con, rows, log=print):
     return last, applied
 
 
+def sync_soon(db_path):
+    """True when a phone payment waits for its Nedarim charge (sync every few minutes until it arrives)."""
+    con = store.connect(db_path)
+    try:
+        row = con.execute("SELECT value FROM kv WHERE key='nedarim_sync_soon'").fetchone()
+        return bool(row) and time.time() >= float(row[0])
+    finally:
+        con.close()
+
+
 def sync(cfg, db_path, fetch=fetch_history, log=print):
     if not (cfg.get('nedarim') or {}).get('api_password'):
         return False
@@ -291,6 +301,11 @@ def sync(cfg, db_path, fetch=fetch_history, log=print):
             freeze_new_kevas(cfg, con, log=log)
             name_kevas(cfg, con, log=log)
         retag_payments(cfg, con, log=log)
+        with con:
+            store.expire_pending(con)
+            # sync every few minutes for an hour after a pending payment, then the usual pace (Nedarim's rate limit)
+            if not con.execute('SELECT 1 FROM payments WHERE pending=1 AND created>?', (time.time() - 3600,)).fetchone():
+                con.execute("DELETE FROM kv WHERE key='nedarim_sync_soon'")
     finally:
         con.close()
     return True

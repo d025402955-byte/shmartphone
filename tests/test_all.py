@@ -924,6 +924,63 @@ class PaymentTests(Base):
         out = admin.sub_page(self.cfg, self.con, sid)
         self.assertIn('שמירת הגדרות ניטור', out)
 
+    def test_payment_without_confirmation_opens_at_once_and_stays_when_confirmed(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='trial', status='trial',
+                                          expires='2026-10-01')
+            self.con.execute('UPDATE subscribers SET trial_renewed=1 WHERE id=?', (sid,))
+        self.go()
+        self.go(pplan='1')
+        r = self.go(payment='OK', CONFIRM_payment='')  # OK, but no confirmation number
+        self.assertIn('המנוי', spoken(r[0]))
+        s = self.sub()
+        self.assertEqual((s['status'], s['plan'], s['expires']), ('active', 'monthly', '2026-11-23'))  # open now
+        p = self.con.execute('SELECT * FROM payments').fetchone()
+        self.assertEqual((p['pending'], p['plan'], p['amount']), (1, 'monthly', 8.9))
+        with self.con:  # the test's day is fixed: the payment was made that day
+            self.con.execute('UPDATE payments SET created=?', (time.mktime(DAY.timetuple()) + 3600,))
+        rows = [{'TransactionId': '700', 'Amount': '8.9', 'Confirmation': '31', 'Groupe': f'תרומה {sid}',
+                 'KevaId': '55', 'TransactionTime': DAY.strftime('%d/%m/%Y 12:00')}]
+        with self.con:
+            nedarim.apply_transactions(self.cfg, self.con, rows, log=lambda *a, **k: None)
+            self.assertEqual(store.expire_pending(self.con, now=time.time() + 86400), 0)  # confirmed: never undone
+        self.assertEqual(self.sub()['expires'], '2026-11-23')  # not extended twice
+        p = self.con.execute('SELECT * FROM payments').fetchone()
+        self.assertEqual((p['pending'], p['transaction_id']), (0, '700'))
+
+    def test_unconfirmed_payment_is_undone(self):
+        with self.con:
+            sid = store.create_subscriber(self.con, main_phone='0521234567', plan='trial', status='trial',
+                                          expires='2026-10-01')
+            self.con.execute('UPDATE subscribers SET trial_renewed=1 WHERE id=?', (sid,))
+        self.go()
+        self.go(pplan='2')
+        self.go(payment='OK', CONFIRM_payment='')
+        self.assertEqual((self.sub()['status'], self.sub()['plan']), ('active', 'annual'))
+        with self.con:  # Nedarim never shows the charge: back to the expired trial
+            self.assertEqual(store.expire_pending(self.con, now=time.time() + 4 * 3600), 1)
+        s = self.sub()
+        self.assertEqual((s['status'], s['plan'], s['expires']), ('trial', 'trial', '2026-10-01'))
+        self.assertIn('לא אושר, בוטל', admin.activity_page(self.cfg, self.con))
+
+    def test_unconfirmed_deposit_is_taken_back(self):
+        self.cfg['payments']['deposits'] = [10, 20, 50]
+        with self.con:
+            store.create_subscriber(self.con, main_phone='0521234567', plan='prepaid', status='active')
+        self.go('pay')
+        self.go('pay', pplan='3')
+        self.go('pay', pdep='1')
+        r = self.go('pay', payment='OK', CONFIRM_payment='')
+        self.assertIn('הפיקדון נטען', spoken(r[0]))
+        self.assertEqual(store.balance(self.sub()), 1000)  # credited at once
+        with self.con:
+            self.assertEqual(store.expire_pending(self.con, now=time.time() + 4 * 3600), 1)
+        self.assertEqual(store.balance(self.sub()), 0)
+        a = self.con.execute("SELECT * FROM alerts WHERE kind='payment_notice'").fetchone()  # the subscriber hears
+        self.assertEqual(a['alert_phone'], '0521234567')
+        self.assertIn('התשלום שביצעתם לא אושר', a['payload'])
+        self.assertIn('הפיקדון שנטען בוטל', a['payload'])
+
     def test_phone_deposit_without_confirm_is_not_credited_twice_by_sync(self):
         with self.con:
             sid = store.create_subscriber(self.con, main_phone='0521234567', plan='prepaid', status='active')

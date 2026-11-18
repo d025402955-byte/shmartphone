@@ -470,7 +470,8 @@ def payments_card(con):
     """Credit card transactions: successful payments, and attempts that failed."""
     rows = [(p['created'], p['subscriber_id'], p['main_phone'], PAY_SOURCES.get(p['source'], p['source']),
              store.PLANS.get(p['plan'], 'פיקדון' if p['plan'] == 'deposit' else p['plan'] or ''), p['amount'],
-             'בוצע', p['confirm'] or '', p['transaction_id'] or '', p['keva_id'] or '')
+             {1: 'נפתח, ממתין לאישור', 2: 'לא אושר, בוטל'}.get(p['pending'], 'בוצע'), p['confirm'] or '', p['transaction_id'] or '',
+             p['keva_id'] or '')
             for p in con.execute('SELECT p.*, s.main_phone FROM payments p LEFT JOIN subscribers s '
                                  'ON s.id=p.subscriber_id ORDER BY p.id DESC LIMIT 200')]
     for a in con.execute(f"SELECT * FROM audit WHERE action IN ({','.join('?' * len(PAY_FAILS))}) "
